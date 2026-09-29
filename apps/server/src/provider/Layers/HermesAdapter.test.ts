@@ -129,6 +129,17 @@ function withRealTimeout<A, E>(
   return Effect.raceFirst(effect, realTimeout);
 }
 
+/** A real wall-clock pause, for letting forked fibers reach a point the virtual TestClock cannot advance them to. */
+function realPause(milliseconds: number): Effect.Effect<void> {
+  return Effect.promise(
+    () =>
+      new Promise<void>((resolve) => {
+        // @effect-diagnostics-next-line globalTimers:off -- real wall-clock pause; the virtual TestClock never advances this.
+        setTimeout(resolve, milliseconds);
+      }),
+  );
+}
+
 async function readJsonLines(filePath: string) {
   const raw = await NodeFSP.readFile(filePath, "utf8");
   return raw
@@ -912,10 +923,15 @@ it.layer(hermesAdapterTestLayer)("makeHermesAdapter against the mock ACP agent",
         const adapter = yield* makeTestAdapter(wrapperPath);
 
         const warningEvents: Array<Extract<ProviderRuntimeEvent, { type: "runtime.warning" }>> = [];
+        const completedEvents: Array<Extract<ProviderRuntimeEvent, { type: "turn.completed" }>> =
+          [];
         const eventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
           Effect.sync(() => {
             if (event.type === "runtime.warning" && String(event.threadId) === String(threadId)) {
               warningEvents.push(event);
+            }
+            if (event.type === "turn.completed" && String(event.threadId) === String(threadId)) {
+              completedEvents.push(event);
             }
           }),
         ).pipe(Effect.forkChild);
@@ -958,12 +974,13 @@ it.layer(hermesAdapterTestLayer)("makeHermesAdapter against the mock ACP agent",
 
         yield* withRealTimeout(Fiber.join(steerFiber), 5_000);
         yield* Fiber.interrupt(turnAFiber);
+        yield* realPause(50);
         yield* Fiber.interrupt(eventsFiber);
 
         assert.equal(warningEvents.length, 1);
         assert.include(
           warningEvents[0]?.payload.message ?? "",
-          "Timed out after 30000ms waiting for the previous prompt to finish cancelling",
+          "Could not cancel the running Hermes turn to apply a steer",
         );
 
         const requestLog = yield* Effect.promise(() => readJsonLines(requestLogPath));
@@ -974,7 +991,144 @@ it.layer(hermesAdapterTestLayer)("makeHermesAdapter against the mock ACP agent",
           "the steer must never dispatch a second session/prompt after timing out",
         );
 
-        yield* adapter.stopSession(threadId);
+        // The cancel timeout killed the ACP process: the turn is settled as
+        // failed and the session stopped, not left `running` or `ready`.
+        assert.equal(completedEvents.length, 1);
+        assert.equal(completedEvents[0]?.payload.state, "failed");
+        assert.isFalse(yield* adapter.hasSession(threadId));
+      }),
+  );
+
+  it.effect(
+    "stops the session instead of reporting it ready when an interrupt's cancel never completes",
+    () =>
+      Effect.gen(function* () {
+        const threadId = ThreadId.make("hermes-interrupt-cancel-timeout");
+        const tempDir = yield* Effect.promise(() =>
+          NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "hermes-interrupt-timeout-log-")),
+        );
+        const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
+        const wrapperPath = yield* Effect.promise(() =>
+          makeMockHermesWrapper({
+            T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+            T3_ACP_HANG_FIRST_PROMPT_FOREVER: "1",
+          }),
+        );
+        const adapter = yield* makeTestAdapter(wrapperPath);
+
+        const completedEvents: Array<Extract<ProviderRuntimeEvent, { type: "turn.completed" }>> =
+          [];
+        const exitedEvents: Array<Extract<ProviderRuntimeEvent, { type: "session.exited" }>> = [];
+        const eventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => {
+            if (String(event.threadId) !== String(threadId)) return;
+            if (event.type === "turn.completed") completedEvents.push(event);
+            if (event.type === "session.exited") exitedEvents.push(event);
+          }),
+        ).pipe(Effect.forkChild);
+
+        yield* adapter.startSession({
+          threadId,
+          provider: ProviderDriverKind.make("hermes"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          modelSelection: { instanceId: ProviderInstanceId.make("hermes"), model: "hermes-agent" },
+        });
+
+        const turnAFiber = yield* adapter
+          .sendTurn({ threadId, input: "turn A (hangs forever)", attachments: [] })
+          .pipe(Effect.forkChild);
+        yield* waitForFileContentReal(requestLogPath, 120, '"method":"session/prompt"');
+
+        const interruptFiber = yield* adapter.interruptTurn(threadId).pipe(Effect.forkChild);
+        yield* realPause(50);
+        // Past the runtime's 30s cancel bound: it kills `hermes acp` and
+        // cancel() fails.
+        yield* TestClock.adjust("31 seconds");
+
+        yield* withRealTimeout(Fiber.join(interruptFiber), 5_000);
+        yield* Fiber.interrupt(turnAFiber);
+        yield* realPause(50);
+        yield* Fiber.interrupt(eventsFiber);
+
+        assert.isFalse(yield* adapter.hasSession(threadId));
+        assert.equal(completedEvents.length, 1);
+        assert.equal(completedEvents[0]?.payload.state, "failed");
+        assert.equal(exitedEvents.length, 1);
+        assert.equal(exitedEvents[0]?.payload.exitKind, "error");
+      }),
+  );
+
+  it.effect(
+    "fails a turn that produces no content or tool progress once the inactivity timeout passes",
+    () =>
+      Effect.gen(function* () {
+        const threadId = ThreadId.make("hermes-silent-turn-stall");
+        const tempDir = yield* Effect.promise(() =>
+          NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "hermes-silent-stall-log-")),
+        );
+        const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
+        const wrapperPath = yield* Effect.promise(() =>
+          makeMockHermesWrapper({
+            T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+            T3_ACP_HANG_FIRST_PROMPT_FOREVER: "1",
+          }),
+        );
+        const adapter = yield* makeTestAdapter(wrapperPath, { turnInactivityTimeoutMs: 1_000 });
+
+        const completedEvents: Array<Extract<ProviderRuntimeEvent, { type: "turn.completed" }>> =
+          [];
+        const eventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => {
+            if (event.type === "turn.completed" && String(event.threadId) === String(threadId)) {
+              completedEvents.push(event);
+            }
+          }),
+        ).pipe(Effect.forkChild);
+
+        yield* adapter.startSession({
+          threadId,
+          provider: ProviderDriverKind.make("hermes"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          modelSelection: { instanceId: ProviderInstanceId.make("hermes"), model: "hermes-agent" },
+        });
+
+        // The first prompt hangs without sending a single notification.
+        const turnAFiber = yield* adapter
+          .sendTurn({ threadId, input: "silent turn", attachments: [] })
+          .pipe(Effect.forkChild);
+        yield* waitForFileContentReal(requestLogPath, 120, '"method":"session/prompt"');
+        yield* realPause(50);
+        // Past the inactivity deadline, which starts when the turn starts.
+        yield* TestClock.adjust("2 seconds");
+        yield* realPause(50);
+        // The stall handler's cancel then waits out the runtime's 30s bound.
+        yield* TestClock.adjust("31 seconds");
+
+        yield* withRealTimeout(
+          Effect.promise(async () => {
+            while (completedEvents.length === 0) {
+              await new Promise((resolve) => {
+                // @effect-diagnostics-next-line globalTimers:off -- real wall-clock poll; the virtual TestClock freezes Effect.sleep here.
+                setTimeout(resolve, 25);
+              });
+            }
+          }),
+          5_000,
+        );
+        yield* Fiber.interrupt(turnAFiber);
+        yield* Fiber.interrupt(eventsFiber);
+
+        assert.equal(completedEvents.length, 1);
+        const completed = completedEvents[0];
+        assert.equal(completed?.payload.state, "failed");
+        if (completed?.payload.state === "failed") {
+          assert.include(
+            completed.payload.errorMessage ?? "",
+            "stalled without content or tool progress",
+          );
+        }
       }),
   );
 
@@ -992,10 +1146,14 @@ it.layer(hermesAdapterTestLayer)("makeHermesAdapter against the mock ACP agent",
 
         const completedEvents: Array<Extract<ProviderRuntimeEvent, { type: "turn.completed" }>> =
           [];
+        const deltaTexts: Array<string> = [];
         const eventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
           Effect.sync(() => {
             if (event.type === "turn.completed" && String(event.threadId) === String(threadId)) {
               completedEvents.push(event);
+            }
+            if (event.type === "content.delta" && String(event.threadId) === String(threadId)) {
+              deltaTexts.push(event.payload.delta);
             }
           }),
         ).pipe(Effect.forkChild);
@@ -1020,6 +1178,8 @@ it.layer(hermesAdapterTestLayer)("makeHermesAdapter against the mock ACP agent",
             "Hermes absorbed the prompt into its internal queue; the adapter dispatched while a turn was running",
           );
         }
+        // The marker is never shown as assistant output.
+        assert.deepEqual(deltaTexts, []);
 
         yield* adapter.stopSession(threadId);
       }),
@@ -1034,10 +1194,12 @@ it.layer(hermesAdapterTestLayer)("makeHermesAdapter against the mock ACP agent",
         const stateDir = yield* Effect.promise(() =>
           NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "hermes-stale-auth-state-")),
         );
+        const exitLogPath = NodePath.join(stateDir, "exit.log");
         const wrapperPath = yield* Effect.promise(() =>
           makeMockHermesWrapper({
             T3_ACP_STALE_AUTH_METHOD_ONCE: "1",
             T3_ACP_STALE_AUTH_METHOD_STATE_PATH: NodePath.join(stateDir, "state"),
+            T3_ACP_EXIT_LOG_PATH: exitLogPath,
           }),
         );
         const adapter = yield* makeTestAdapter(wrapperPath);
@@ -1054,6 +1216,25 @@ it.layer(hermesAdapterTestLayer)("makeHermesAdapter against the mock ACP agent",
           modelSelection: { instanceId: ProviderInstanceId.make("hermes"), model: "hermes-agent" },
         });
         assert.equal(session.provider, "hermes");
+
+        // Every process but the live session's has been stopped: the two
+        // auth probes and the rejected first attempt. The rejected attempt
+        // must not keep running for the life of the session.
+        const countStops = () =>
+          NodeFSP.readFile(exitLogPath, "utf8")
+            .catch(() => "")
+            .then((raw) => raw.split("\n").filter((line) => line === "SIGTERM").length);
+        const stopsBeforeSessionEnd = yield* Effect.promise(async () => {
+          for (let attempt = 0; attempt < 200; attempt += 1) {
+            if ((await countStops()) >= 3) break;
+            await new Promise((resolve) => {
+              // @effect-diagnostics-next-line globalTimers:off -- real wall-clock poll for child processes exiting.
+              setTimeout(resolve, 25);
+            });
+          }
+          return countStops();
+        });
+        assert.equal(stopsBeforeSessionEnd, 3);
 
         yield* adapter.stopSession(threadId);
       }),

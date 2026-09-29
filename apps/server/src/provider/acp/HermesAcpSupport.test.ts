@@ -60,6 +60,24 @@ describe("buildHermesAcpSpawnInput", () => {
     expect(spawn.args).toEqual(["acp"]);
   });
 
+  it("does not pass an inherited HERMES_HOME through in place of the setting", () => {
+    const inherited = { PATH: "/usr/bin", HERMES_HOME: "/srv/inherited-home" };
+
+    const blank = buildHermesAcpSpawnInput(
+      { binaryPath: "hermes", homePath: "" },
+      "/tmp/project",
+      inherited,
+    );
+    expect(blank.env).toEqual({ PATH: "/usr/bin" });
+
+    const set = buildHermesAcpSpawnInput(
+      { binaryPath: "hermes", homePath: "/srv/chosen-home" },
+      "/tmp/project",
+      inherited,
+    );
+    expect(set.env).toEqual({ PATH: "/usr/bin", HERMES_HOME: "/srv/chosen-home" });
+  });
+
   it("sets HERMES_HOME only when homePath is non-empty", () => {
     const withHome = buildHermesAcpSpawnInput(
       { binaryPath: "hermes", homePath: "~/.hermes/profiles/phoebe" },

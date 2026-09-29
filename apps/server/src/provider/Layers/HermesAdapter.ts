@@ -199,6 +199,14 @@ const STEER_PREVIOUS_PROMPT_AWAIT_TIMEOUT_MS = HERMES_CANCEL_TIMEOUT_MS;
 const HERMES_QUEUED_PROMPT_TEXT_PATTERN = /^Queued for the next turn\. \(\d+ queued\)$/;
 const HERMES_REDIRECTED_PROMPT_TEXT = "Redirected the active turn with your correction.";
 
+/** True when `text` is one of Hermes's queue-absorption or redirect replies. */
+function isHermesQueueMarkerText(text: string): boolean {
+  const trimmed = text.trim();
+  return (
+    HERMES_QUEUED_PROMPT_TEXT_PATTERN.test(trimmed) || trimmed === HERMES_REDIRECTED_PROMPT_TEXT
+  );
+}
+
 /** Drains queued ACP notifications before a settlement flips `ctx.activeTurnId`, bounded so a stalled queue can never hang the caller. */
 function drainAcpEvents(acp: Pick<AcpSessionRuntime.AcpSessionRuntime["Service"], "drainEvents">) {
   return Effect.ignore(acp.drainEvents.pipe(Effect.timeout(`${DRAIN_EVENTS_TIMEOUT_MS} millis`)));
@@ -421,6 +429,9 @@ export function makeHermesAdapter(
     const makeAcpNativeLoggers = yield* makeAcpNativeLoggerFactory();
 
     const sessions = new Map<ThreadId, HermesSessionContext>();
+    // Outlives every session scope: work that must stop a session from
+    // inside that session's own notification fiber is forked here.
+    const adapterScope = yield* Effect.scope;
     const threadLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
     const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
     const requestedTurnInactivityTimeoutMs = options?.turnInactivityTimeoutMs;
@@ -483,10 +494,14 @@ export function makeHermesAdapter(
     const signalTurnLiveness = (ctx: HermesSessionContext, turnId: TurnId) =>
       Queue.offer(ctx.livenessSignals, { turnId }).pipe(Effect.asVoid);
 
+    // The inactivity deadline starts when the turn starts. Leaving the
+    // timestamp unset until the first notification meant a prompt that never
+    // produced any content or tool progress was never timed out at all.
     const beginTurnLiveness = (ctx: HermesSessionContext, turnId: TurnId) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
         ctx.livenessTurnId = turnId;
-        ctx.lastTurnActivityAtNanos = undefined;
+        ctx.lastTurnActivityAtNanos = yield* Clock.monotonicTimeNanos;
+        yield* signalTurnLiveness(ctx, turnId);
       });
 
     const clearTurnLiveness = (ctx: HermesSessionContext) => {
@@ -709,7 +724,8 @@ export function makeHermesAdapter(
       return Effect.succeed(ctx);
     };
 
-    const stopSessionInternal = (ctx: HermesSessionContext) =>
+    /** `exitReason` marks an abnormal exit (the ACP runtime died or could not be cancelled). */
+    const stopSessionInternal = (ctx: HermesSessionContext, exitReason?: string) =>
       Effect.gen(function* () {
         if (ctx.stopped) return;
         ctx.stopped = true;
@@ -725,7 +741,10 @@ export function makeHermesAdapter(
           ...(yield* makeEventStamp()),
           provider: PROVIDER,
           threadId: ctx.threadId,
-          payload: { exitKind: "graceful" },
+          payload:
+            exitReason === undefined
+              ? { exitKind: "graceful" }
+              : { exitKind: "error", reason: exitReason, recoverable: true },
         });
       });
 
@@ -764,6 +783,33 @@ export function makeHermesAdapter(
         });
         ctx.interruptedTurnIds.delete(turnId);
       });
+
+    /**
+     * Ends a session whose ACP runtime can no longer be trusted: the
+     * `hermes acp` process exited, or a `session/cancel` failed (on a cancel
+     * timeout the runtime kills the process itself). Any live turn is settled
+     * as failed first, so the thread never stays `running` with nobody left
+     * to finish it; the session is then stopped, so `hasSession` and
+     * `listSessions` stop reporting it and the next turn starts a fresh one.
+     * Takes the thread lock: never call it while holding that lock, or from
+     * the session's own notification fiber (fork it into `adapterScope`).
+     */
+    const retireSession = (ctx: HermesSessionContext, reason: string) =>
+      withThreadLock(
+        ctx.threadId,
+        Effect.gen(function* () {
+          if (sessions.get(ctx.threadId) !== ctx || ctx.stopped) {
+            return;
+          }
+          const turnId = ctx.activeTurnId;
+          if (turnId !== undefined) {
+            ctx.interruptedTurnIds.add(turnId);
+            yield* settleTurnAsInterrupted(ctx, turnId, reason);
+            ctx.interruptedTurnIds.delete(turnId);
+          }
+          yield* stopSessionInternal(ctx, reason);
+        }),
+      );
 
     const startSession: HermesAdapterShape["startSession"] = (input) =>
       withThreadLock(
@@ -1072,6 +1118,18 @@ export function makeHermesAdapter(
                 if (event._tag === "ModeChanged") {
                   return;
                 }
+                if (event._tag === "ConnectionTerminated") {
+                  // The `hermes acp` process is gone (it exited, or the
+                  // runtime killed it after a cancel timed out). Retire the
+                  // session rather than leave it reporting `ready` over a
+                  // dead runtime. Forked out of this fiber: retiring drains
+                  // and then interrupts this very notification fiber.
+                  yield* retireSession(
+                    ctx,
+                    `Hermes ACP process ended: ${event.error.message}`,
+                  ).pipe(Effect.forkIn(adapterScope), Effect.asVoid);
+                  return;
+                }
 
                 const notificationTurnId = ctx.activeTurnId;
                 if (
@@ -1138,6 +1196,19 @@ export function makeHermesAdapter(
                     );
                     return;
                   case "ContentDelta":
+                    // Hermes answers a prompt it absorbed into its own queue
+                    // (or used to redirect the running turn) with one fixed
+                    // message chunk. Recognise it here, before it is shown as
+                    // assistant output; it is still accumulated below so the
+                    // settlement check can fail the turn loudly.
+                    if (
+                      ctx.activePromptSeq !== undefined &&
+                      (ctx.turnResponseText.get(ctx.activePromptSeq) ?? "").trim() === "" &&
+                      isHermesQueueMarkerText(event.text)
+                    ) {
+                      ctx.turnResponseText.set(ctx.activePromptSeq, event.text);
+                      return;
+                    }
                     // Accumulated so sendTurn's settlement can inspect the
                     // full text of THIS dispatch once the prompt RPC
                     // returns (see the queue-absorption check below).
@@ -1351,7 +1422,6 @@ export function makeHermesAdapter(
 
             if (!steering) {
               ctx.lastPlanFingerprint = undefined;
-              yield* beginTurnLiveness(ctx, turnId);
               yield* offerRuntimeEvent({
                 type: "turn.started",
                 ...(yield* makeEventStamp()),
@@ -1368,6 +1438,11 @@ export function makeHermesAdapter(
               updatedAt: yield* nowIso,
               ...(displayModel ? { model: displayModel } : {}),
             };
+            if (!steering) {
+              // After the session is marked running: the watchdog skips a
+              // turn that is not live yet, and this may be its only wake-up.
+              yield* beginTurnLiveness(ctx, turnId);
+            }
 
             return {
               _tag: "prepared" as const,
@@ -1466,23 +1541,26 @@ export function makeHermesAdapter(
                 ),
                 Effect.result,
               );
-              if (liveCtx.activePromptSeq !== prepared.seq) {
-                // A newer steer won the permit race while this one was
-                // cancelling; it owns the replacement dispatch.
-                return { _tag: "skipped" as const };
-              }
+              // Checked before the ownership check below: when cancel fails
+              // the runtime is dead or in an unknown state, so this steer is
+              // dropped whoever owns the turn now, and the user is told so.
+              // (A session retired meanwhile, e.g. by the process-exit
+              // handler, has already cleared activePromptSeq.)
               if (Result.isFailure(cancelResult)) {
+                const reason = `Could not cancel the running Hermes turn to apply a steer (${cancelResult.failure.message}); the steer was dropped and the session was stopped.`;
                 yield* offerRuntimeEvent({
                   type: "runtime.warning",
                   ...(yield* makeEventStamp()),
                   provider: PROVIDER,
                   threadId: input.threadId,
                   turnId: prepared.turnId,
-                  payload: {
-                    message: `Timed out after ${STEER_PREVIOUS_PROMPT_AWAIT_TIMEOUT_MS}ms waiting for the previous prompt to finish cancelling (${cancelResult.failure.message}); dropping this steer.`,
-                  },
+                  payload: { message: reason },
                 });
-                return { _tag: "skipped" as const };
+                // This steer already took over the turn (activePromptSeq),
+                // so the original prompt will settle silently when it
+                // returns. Nobody would end the turn: the steer's caller
+                // retires the session, settling the turn as failed.
+                return { _tag: "dropped" as const, ctx: liveCtx, reason };
               }
               // Defensive second bound: cancel() above should already
               // have waited for turn A's own dispatched fiber to settle
@@ -1503,17 +1581,16 @@ export function makeHermesAdapter(
                   // turn that, as far as it's concerned, is still active
                   // — exactly the absorption bug this fix exists to
                   // prevent. Drop the steer instead of dispatching.
+                  const reason = `Timed out after ${STEER_PREVIOUS_PROMPT_AWAIT_TIMEOUT_MS}ms waiting for the previous prompt to finish cancelling; the steer was dropped and the session was stopped.`;
                   yield* offerRuntimeEvent({
                     type: "runtime.warning",
                     ...(yield* makeEventStamp()),
                     provider: PROVIDER,
                     threadId: input.threadId,
                     turnId: prepared.turnId,
-                    payload: {
-                      message: `Timed out after ${STEER_PREVIOUS_PROMPT_AWAIT_TIMEOUT_MS}ms waiting for the previous prompt to finish cancelling; dropping this steer.`,
-                    },
+                    payload: { message: reason },
                   });
-                  return { _tag: "skipped" as const };
+                  return { _tag: "dropped" as const, ctx: liveCtx, reason };
                 }
               }
               if (liveCtx.activePromptSeq !== prepared.seq) {
@@ -1558,6 +1635,14 @@ export function makeHermesAdapter(
             ? yield* Fiber.join(promptStart.fiber).pipe(Effect.result)
             : undefined;
 
+        if (promptStart._tag === "dropped") {
+          yield* retireSession(promptStart.ctx, promptStart.reason);
+          return {
+            threadId: input.threadId,
+            turnId: prepared.turnId,
+          };
+        }
+
         return yield* withThreadLock(
           input.threadId,
           Effect.gen(function* () {
@@ -1569,6 +1654,9 @@ export function makeHermesAdapter(
             if (!isWinningCall || result === undefined) {
               // A newer sendTurn superseded this one (or this one was never
               // dispatched at all); the newer call owns the terminal event.
+              // Its accumulated text is never read, so drop it here rather
+              // than keep every superseded steer's response in memory.
+              ctx?.turnResponseText.delete(prepared.seq);
               return {
                 threadId: input.threadId,
                 turnId: prepared.turnId,
@@ -1624,8 +1712,7 @@ export function makeHermesAdapter(
             liveCtx.turnResponseText.delete(prepared.seq);
             const wasAbsorbedByHermesQueue =
               result.success.stopReason === "end_turn" &&
-              (HERMES_QUEUED_PROMPT_TEXT_PATTERN.test(dispatchResponseText) ||
-                dispatchResponseText === HERMES_REDIRECTED_PROMPT_TEXT);
+              isHermesQueueMarkerText(dispatchResponseText);
             yield* clearTurnLiveness(liveCtx);
             const completedAt = yield* nowIso;
             const { activeTurnId: _completedTurnId, ...readySession } = liveCtx.session;
@@ -1679,6 +1766,12 @@ export function makeHermesAdapter(
         const interruptedTurnId = turnId ?? activeTurnId;
         yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
         yield* settlePendingUserInputsAsCancelled(ctx.pendingUserInputs);
+        // Mark the turn interrupted before the (possibly long) cancel wait,
+        // so notifications Hermes sends meanwhile are no longer appended to a
+        // turn the user has already stopped.
+        if (interruptedTurnId !== undefined) {
+          ctx.interruptedTurnIds.add(interruptedTurnId);
+        }
         // Outside the thread lock: with cancelBehavior "wait-for-prompt"
         // (HermesAcpSupport.ts), cancel() can now take up to
         // HERMES_CANCEL_TIMEOUT_MS to settle. Holding the thread lock for
@@ -1686,13 +1779,23 @@ export function makeHermesAdapter(
         // including a brand-new sendTurn's own prepare phase — for the
         // same duration. Mirrors why sendTurn's own steering branch does
         // its cancel/await work outside withThreadLock too.
-        yield* Effect.ignore(
-          ctx.acp.cancel.pipe(
-            Effect.mapError((error) =>
-              mapAcpToAdapterError(PROVIDER, threadId, "session/cancel", error),
-            ),
+        const cancelResult = yield* ctx.acp.cancel.pipe(
+          Effect.mapError((error) =>
+            mapAcpToAdapterError(PROVIDER, threadId, "session/cancel", error),
           ),
+          Effect.result,
         );
+        if (Result.isFailure(cancelResult)) {
+          // On a cancel timeout the runtime has already killed `hermes acp`;
+          // any other cancel failure leaves the prompt's state unknown.
+          // Settling the turn and reporting the session `ready` would hand
+          // the next turn a dead runtime, so retire the session instead.
+          yield* retireSession(
+            ctx,
+            `Hermes did not confirm the cancel (${cancelResult.failure.message}); the session was stopped.`,
+          );
+          return;
+        }
         if (interruptedTurnId !== undefined) {
           // settleTurnAsInterrupted re-validates the turn is still live
           // (isLiveTurn) before mutating anything, so a session that
@@ -1702,8 +1805,16 @@ export function makeHermesAdapter(
           yield* withThreadLock(
             threadId,
             Effect.gen(function* () {
-              ctx.interruptedTurnIds.add(interruptedTurnId);
+              // The session may have been stopped or replaced while cancel()
+              // ran without the lock; a stale turn.completed must not reach
+              // the replacement.
+              if (sessions.get(threadId) !== ctx || ctx.stopped) {
+                return;
+              }
               yield* settleTurnAsInterrupted(ctx, interruptedTurnId);
+              // Not live any more (the prompt settled on its own): nothing
+              // else will clear the mark.
+              ctx.interruptedTurnIds.delete(interruptedTurnId);
             }),
           );
         }
@@ -1787,7 +1898,9 @@ export function makeHermesAdapter(
       });
 
     const stopAll: HermesAdapterShape["stopAll"] = () =>
-      Effect.forEach(Array.from(sessions.values()), stopSessionInternal, { discard: true });
+      Effect.forEach(Array.from(sessions.values()), (ctx) => stopSessionInternal(ctx), {
+        discard: true,
+      });
 
     yield* Effect.addFinalizer(() =>
       Effect.ignore(stopAll()).pipe(

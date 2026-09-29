@@ -125,12 +125,17 @@ export function buildHermesAcpSpawnInput(
   environment?: NodeJS.ProcessEnv,
 ): AcpSessionRuntime.AcpSpawnInput {
   const homePath = hermesSettings?.homePath?.trim();
+  // A blank setting means "Hermes's own default home". An HERMES_HOME
+  // inherited from the server's environment would silently override that,
+  // so it is dropped unless the setting supplies one.
+  const inheritedEnvironment = { ...environment };
+  delete inheritedEnvironment[HERMES_HOME_ENV];
   return {
     command: hermesSettings?.binaryPath || "hermes",
     args: ["acp"],
     cwd,
     env: {
-      ...environment,
+      ...inheritedEnvironment,
       // Blank means "use Hermes's own default (~/.hermes)" — omit the
       // override entirely rather than sending an empty HERMES_HOME.
       ...(homePath ? { [HERMES_HOME_ENV]: homePath } : {}),
@@ -361,9 +366,27 @@ export const withHermesAcpAuthRetry = <A>(
     };
 
     const firstAuthMethodId = yield* resolveHermesAcpAuthMethodId(probeInput);
-    const firstResult = yield* Effect.result(
-      makeHermesAcpRuntimeForAuthMethodId(input, firstAuthMethodId).pipe(Effect.flatMap(attempt)),
-    );
+    // Each attempt builds its runtime (and its `hermes acp` child) in a
+    // child of the caller's scope. A failed attempt's scope is closed at
+    // once, so a stale-auth retry does not leave the first process running
+    // for the life of the session; a successful attempt's scope stays open
+    // and closes with the caller's scope.
+    const runAttempt = (authMethodId: string) =>
+      Effect.gen(function* () {
+        const attemptScope = yield* Scope.fork(yield* Effect.scope);
+        const result = yield* Effect.result(
+          makeHermesAcpRuntimeForAuthMethodId(input, authMethodId).pipe(
+            Effect.flatMap(attempt),
+            Effect.provideService(Scope.Scope, attemptScope),
+          ),
+        );
+        if (Result.isFailure(result)) {
+          yield* Scope.close(attemptScope, Exit.void);
+        }
+        return result;
+      });
+
+    const firstResult = yield* runAttempt(firstAuthMethodId);
     if (Result.isSuccess(firstResult)) {
       return firstResult.success;
     }
@@ -373,9 +396,7 @@ export const withHermesAcpAuthRetry = <A>(
 
     invalidateHermesAcpAuthMethodIdCache(input.hermesSettings);
     const secondAuthMethodId = yield* resolveHermesAcpAuthMethodId(probeInput);
-    const secondResult = yield* Effect.result(
-      makeHermesAcpRuntimeForAuthMethodId(input, secondAuthMethodId).pipe(Effect.flatMap(attempt)),
-    );
+    const secondResult = yield* runAttempt(secondAuthMethodId);
     if (Result.isSuccess(secondResult)) {
       return secondResult.success;
     }
