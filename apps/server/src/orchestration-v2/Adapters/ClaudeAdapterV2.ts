@@ -1576,6 +1576,7 @@ const CLAUDE_KNOWN_TOOL_CLASSIFICATIONS: Record<
   glob: { itemType: "dynamic_tool", requestKind: "file-read" },
   grep: { itemType: "dynamic_tool", requestKind: "file-read" },
   ls: { itemType: "dynamic_tool", requestKind: "file-read" },
+  monitor: { itemType: "dynamic_tool", requestKind: "command" },
   multiedit: { itemType: "file_change", requestKind: "file-change" },
   notebookedit: { itemType: "file_change", requestKind: "file-change" },
   read: { itemType: "dynamic_tool", requestKind: "file-read" },
@@ -1700,14 +1701,18 @@ function isClaudeOpaqueBackgroundTaskType(taskType: string | null | undefined): 
 function claudePendingBackgroundTask(input: {
   readonly taskId: string;
   readonly taskType: string | null;
+  // Claude runs a Monitor as a local_bash task, so only the Monitor tool call
+  // that started it tells it apart from a background Bash command.
+  readonly startedByMonitor: boolean;
   readonly description: string | undefined;
 }): OrchestrationV2PendingBackgroundTask {
   return {
     taskId: input.taskId,
-    kind:
-      (input.taskType === null
-        ? undefined
-        : CLAUDE_OPAQUE_BACKGROUND_TASK_KINDS.get(input.taskType)) ?? "background_task",
+    kind: input.startedByMonitor
+      ? "monitor"
+      : ((input.taskType === null
+          ? undefined
+          : CLAUDE_OPAQUE_BACKGROUND_TASK_KINDS.get(input.taskType)) ?? "background_task"),
     ...(input.description !== undefined && input.description.trim().length > 0
       ? { description: input.description }
       : {}),
@@ -1742,6 +1747,7 @@ function claudePendingBackgroundTasksFromRoster(
 
 function parseClaudeBackgroundTaskEntry(
   entry: unknown,
+  monitorTaskIds: ReadonlySet<string>,
 ): OrchestrationV2PendingBackgroundTask | null {
   if (entry === null || typeof entry !== "object") {
     return null;
@@ -1761,6 +1767,7 @@ function parseClaudeBackgroundTaskEntry(
   return claudePendingBackgroundTask({
     taskId,
     taskType,
+    startedByMonitor: monitorTaskIds.has(taskId),
     description: typeof description === "string" ? description : undefined,
   });
 }
@@ -2944,6 +2951,42 @@ export function makeClaudeAdapterV2(
         const lastKnownOpaqueTasks = yield* Ref.make(
           new Map<string, OrchestrationV2PendingBackgroundTask>(),
         );
+        // Monitor tool calls, and the tasks they started. A roster snapshot
+        // names only the task, so its kind comes from the task id. Entries
+        // are never removed, so both sets keep only the newest 64 ids.
+        const claudeMonitors = yield* Ref.make<{
+          readonly toolUseIds: ReadonlySet<string>;
+          readonly taskIds: ReadonlySet<string>;
+        }>({ toolUseIds: new Set(), taskIds: new Set() });
+        const boundedAdd = (ids: ReadonlySet<string>, id: string): ReadonlySet<string> => {
+          if (ids.has(id)) return ids;
+          const updated = new Set(ids).add(id);
+          for (const oldest of updated) {
+            if (updated.size <= 64) break;
+            updated.delete(oldest);
+          }
+          return updated;
+        };
+        const rememberClaudeMonitorToolUses = (message: SDKMessage) => {
+          const monitorToolUseIds = claudeToolUseBlocksFromAssistantMessage(message).flatMap(
+            (toolUse) => (toolUse.name === "Monitor" ? [toolUse.id] : []),
+          );
+          return monitorToolUseIds.length === 0
+            ? Effect.void
+            : Ref.update(claudeMonitors, (current) => ({
+                ...current,
+                toolUseIds: monitorToolUseIds.reduce(boundedAdd, current.toolUseIds),
+              }));
+        };
+        /** True when a Monitor call started this task; remembers the task id. */
+        const isClaudeMonitorTask = (taskId: string, toolUseId: string | undefined) =>
+          Ref.modify(claudeMonitors, (current) => {
+            if (current.taskIds.has(taskId)) return [true, current] as const;
+            if (toolUseId === undefined || !current.toolUseIds.has(toolUseId)) {
+              return [false, current] as const;
+            }
+            return [true, { ...current, taskIds: boundedAdd(current.taskIds, taskId) }] as const;
+          });
         const claudeTaskOutcome = (status: "completed" | "failed" | "stopped") =>
           status === "completed" ? "completed" : status === "stopped" ? "cancelled" : "failed";
         // Reads the roster, so call it before the notification clears the task from it.
@@ -4969,8 +5012,9 @@ export function makeClaudeAdapterV2(
               return false;
             }
             const nextTasks: OrchestrationV2PendingBackgroundTask[] = [];
+            const { taskIds: monitorTaskIds } = yield* Ref.get(claudeMonitors);
             for (const entry of roster) {
-              const task = parseClaudeBackgroundTaskEntry(entry);
+              const task = parseClaudeBackgroundTaskEntry(entry, monitorTaskIds);
               if (task !== null) {
                 nextTasks.push(task);
               }
@@ -4992,6 +5036,7 @@ export function makeClaudeAdapterV2(
               claudePendingBackgroundTask({
                 taskId: message.task_id,
                 taskType: claudeTaskTypeFromSdkMessage(message),
+                startedByMonitor: yield* isClaudeMonitorTask(message.task_id, message.tool_use_id),
                 description:
                   typeof message.description === "string" ? message.description : undefined,
               }),
@@ -5054,6 +5099,9 @@ export function makeClaudeAdapterV2(
           }
 
           const message = input.message;
+          // Before any routing: a Monitor started during an idle wake turn
+          // reports its task before the drain replays the tool call.
+          yield* rememberClaudeMonitorToolUses(message);
           if (message.type === "rate_limit_event") {
             const rateLimitInfo = message.rate_limit_info;
             if (!rateLimitInfo) return;
