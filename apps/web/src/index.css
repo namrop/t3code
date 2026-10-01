@@ -77,6 +77,32 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   }
 }
 
+/* Voice-note toolbar flip. Same motion as the phone app's dictation toolbar
+   (apps/mobile ComposerDictationControl toolbarFlip: 260 ms, perspective
+   600, rotateX about the row's edge with a 22 px half-height lift). The voice
+   bar flips in from below; the regular toolbar flips back from above. */
+@keyframes t3-voice-note-flip-in {
+  from {
+    opacity: 0;
+    transform: perspective(600px) translateY(22px) rotateX(-90deg);
+  }
+  to {
+    opacity: 1;
+    transform: perspective(600px) translateY(0) rotateX(0deg);
+  }
+}
+
+@keyframes t3-voice-note-flip-back {
+  from {
+    opacity: 0;
+    transform: perspective(600px) translateY(-22px) rotateX(90deg);
+  }
+  to {
+    opacity: 1;
+    transform: perspective(600px) translateY(0) rotateX(0deg);
+  }
+}
+
 :root {
   --app-scrollbar-width: 6px;
   --appearance-contrast-base: 100%;
@@ -205,6 +231,11 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
      compositor updates discrete frames instead of every vsync. */
   --animate-status-pulse: status-pulse 2s infinite;
   --animate-status-ping: status-ping 2s infinite;
+  /* Voice-note toolbar flip, timed like the phone app's dictation toolbar
+     (260 ms, ease-in-out cubic). Keyframes are with the other composer motion
+     at the top of this file. */
+  --animate-voice-note-flip-in: t3-voice-note-flip-in 260ms cubic-bezier(0.65, 0, 0.35, 1);
+  --animate-voice-note-flip-back: t3-voice-note-flip-back 260ms cubic-bezier(0.65, 0, 0.35, 1);
   --color-warning-foreground: var(--warning-foreground);
   --color-warning: var(--warning);
   --color-warning-surface: var(--warning-surface);
