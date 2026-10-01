@@ -404,7 +404,13 @@ function projectAcpContent(value: unknown): Record<string, unknown> | undefined 
     return undefined;
   }
 
-  const text = value
+  const text = acpContentText(value);
+  const summary = summarizeToolTextOutput(text);
+  return summary ? { content: summary } : undefined;
+}
+
+function acpContentText(value: ReadonlyArray<unknown>): string {
+  return value
     .map((entryValue) => {
       const entry = asRecord(entryValue);
       const content = asRecord(entry?.content);
@@ -414,8 +420,39 @@ function projectAcpContent(value: unknown): Record<string, unknown> | undefined 
     })
     .filter((entry): entry is string => entry !== null)
     .join("\n");
-  const summary = summarizeToolTextOutput(text);
-  return summary ? { content: summary } : undefined;
+}
+
+const HERMES_VOICE_NOTE_TRANSCRIPT_TOOL = "voice_note_transcript";
+// Hermes builds before it named its tool calls sent the transcript under this title only.
+const LEGACY_HERMES_VOICE_NOTE_TRANSCRIPT_TITLE = "Voice note transcript";
+// About an hour of speech; longer recordings keep their opening words.
+const MAX_VOICE_NOTE_TRANSCRIPT_CHARS = 60_000;
+
+/**
+ * What Hermes heard in a voice note is the user's own words, shown in full with
+ * their message, so it is not cut to a one-line preview like tool output.
+ */
+function projectVoiceNoteTranscript(
+  payload: Record<string, unknown>,
+  data: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const named = data.hermesToolName === HERMES_VOICE_NOTE_TRANSCRIPT_TOOL;
+  const legacy =
+    payload.itemType === "dynamic_tool_call" &&
+    payload.title === LEGACY_HERMES_VOICE_NOTE_TRANSCRIPT_TITLE &&
+    data.kind === "other";
+  if (!named && !legacy) return undefined;
+  const text =
+    asTrimmedString(data.rawOutput) ??
+    asTrimmedString(asRecord(data.rawOutput)?.content) ??
+    (Array.isArray(data.content) ? asTrimmedString(acpContentText(data.content)) : null);
+  if (!text) return undefined;
+  return {
+    content:
+      text.length <= MAX_VOICE_NOTE_TRANSCRIPT_CHARS
+        ? text
+        : `${text.slice(0, MAX_VOICE_NOTE_TRANSCRIPT_CHARS - 1)}…`,
+  };
 }
 
 /**
@@ -482,8 +519,12 @@ export function projectActivityPayload(
   if ("toolName" in data) {
     projectedData.toolName = data.toolName;
   }
+  if ("hermesToolName" in data) {
+    projectedData.hermesToolName = data.hermesToolName;
+  }
 
   const rawOutput =
+    projectVoiceNoteTranscript(payload, data) ??
     projectRawOutput(data.rawOutput) ??
     projectAcpContent(data.content) ??
     (payload.itemType === "command_execution" ? summarizeMcpResult(data.result) : undefined);

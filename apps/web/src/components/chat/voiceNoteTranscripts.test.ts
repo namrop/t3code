@@ -77,6 +77,20 @@ describe("extractVoiceNoteTranscript", () => {
     expect(extractVoiceNoteTranscript(legacyTranscript)).toBe(
       "Okay, yeah, let's do the voice follow-ups, please.",
     );
+    // The same row as the server projects it for clients: content folded into rawOutput.
+    expect(
+      extractVoiceNoteTranscript(
+        toolActivity("projected", "2026-10-01T17:46:06.510Z", {
+          itemType: "dynamic_tool_call",
+          title: "Voice note transcript",
+          data: {
+            toolCallId: "tc-20aa52d0dfad",
+            kind: "other",
+            rawOutput: { content: '🎙️ "Okay, yeah, let\'s do the voice follow-ups, please."' },
+          },
+        }),
+      ),
+    ).toBe("Okay, yeah, let's do the voice follow-ups, please.");
   });
 
   it("ignores every other tool call", () => {

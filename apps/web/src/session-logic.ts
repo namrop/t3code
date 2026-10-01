@@ -691,7 +691,21 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
 const VOICE_NOTE_TRANSCRIPT_TOOL_NAME = "voice_note_transcript";
 // Hermes builds before it named its tool calls sent the transcript under this title only.
 const LEGACY_VOICE_NOTE_TRANSCRIPT_TITLE = "Voice note transcript";
-const QUOTED_TRANSCRIPT_PATTERN = /^(?:\u{1F399}\u{FE0F}?\s*)?"([\s\S]*)"$/u;
+const MICROPHONE_EMOJI = String.fromCodePoint(0x1f399);
+const EMOJI_PRESENTATION = String.fromCodePoint(0xfe0f);
+
+/** Hermes shows a transcript as `🎙️ "<words>"`; returns just the words. */
+function unquoteEchoedTranscript(text: string): string {
+  let rest = text;
+  if (rest.startsWith(MICROPHONE_EMOJI)) {
+    rest = rest.slice(MICROPHONE_EMOJI.length);
+    if (rest.startsWith(EMOJI_PRESENTATION)) rest = rest.slice(EMOJI_PRESENTATION.length);
+    rest = rest.trimStart();
+  }
+  return rest.length >= 2 && rest.startsWith('"') && rest.endsWith('"')
+    ? rest.slice(1, -1).trim()
+    : rest;
+}
 
 /** The transcript Hermes echoes for an audio prompt, or undefined for any other activity. */
 export function extractVoiceNoteTranscript(
@@ -710,13 +724,13 @@ export function extractVoiceNoteTranscript(
 
   const rawOutput = data?.rawOutput;
   const rawText = asTrimmedString(rawOutput) ?? asTrimmedString(asRecord(rawOutput)?.content);
-  if (rawText !== null) return rawText;
+  if (rawText !== null) return unquoteEchoedTranscript(rawText) || undefined;
 
   const content = Array.isArray(data?.content) ? data.content : [];
   for (const block of content) {
     const text = asTrimmedString(asRecord(asRecord(block)?.content)?.text);
     if (text === null) continue;
-    const unquoted = QUOTED_TRANSCRIPT_PATTERN.exec(text)?.[1]?.trim() ?? text;
+    const unquoted = unquoteEchoedTranscript(text);
     if (unquoted.length > 0) return unquoted;
   }
   return undefined;

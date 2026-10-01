@@ -327,6 +327,63 @@ describe("projectActivityPayload", () => {
     ).not.toHaveProperty("toolIcon");
   });
 
+  it("sends what Hermes heard in a voice note in full, unlike tool output", () => {
+    const transcript =
+      `Okay, yeah, let's do the voice follow-ups, please. ${"And more. ".repeat(40)}`.trim();
+    const named = projectActivityPayload(
+      activity({
+        itemType: "dynamic_tool_call",
+        title: "Voice note transcript",
+        data: {
+          toolCallId: "tc-1",
+          kind: "other",
+          hermesToolName: "voice_note_transcript",
+          rawOutput: transcript,
+          content: [{ type: "content", content: { type: "text", text: `🎙️ "${transcript}"` } }],
+        },
+      }),
+    );
+    // Stored by Hermes builds that did not name their tool calls yet.
+    const legacy = projectActivityPayload(
+      activity({
+        itemType: "dynamic_tool_call",
+        title: "Voice note transcript",
+        data: {
+          toolCallId: "tc-2",
+          kind: "other",
+          content: [{ type: "content", content: { type: "text", text: `🎙️ "${transcript}"` } }],
+        },
+      }),
+    );
+    const otherTool = projectActivityPayload(
+      activity({
+        itemType: "dynamic_tool_call",
+        title: "session search: voice",
+        data: {
+          toolCallId: "tc-3",
+          kind: "other",
+          hermesToolName: "session_search",
+          rawOutput: transcript,
+        },
+      }),
+    );
+
+    const namedData = (named.payload as Record<string, unknown>).data as Record<string, unknown>;
+    expect(namedData).toMatchObject({
+      hermesToolName: "voice_note_transcript",
+      rawOutput: { content: transcript },
+    });
+    expect(
+      ((legacy.payload as Record<string, unknown>).data as Record<string, unknown>).rawOutput,
+    ).toEqual({ content: `🎙️ "${transcript}"` });
+    const otherData = (otherTool.payload as Record<string, unknown>).data as Record<
+      string,
+      unknown
+    >;
+    expect(otherData.hermesToolName).toBe("session_search");
+    expect((otherData.rawOutput as { content: string }).content.length).toBeLessThanOrEqual(84);
+  });
+
   it("passes task lifecycle payloads (no data field) through untouched", () => {
     const source = activity({
       taskId: "task-9",
