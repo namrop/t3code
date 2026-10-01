@@ -64,6 +64,10 @@ export interface AcpToolCallState {
   readonly command?: string;
   readonly detail?: string;
   readonly data: Record<string, unknown>;
+  /** The title is the generic "Tool" placeholder, not one the agent sent. */
+  readonly titleIsPlaceholder?: true;
+  /** The detail is the call's output text, used only for want of anything else. */
+  readonly detailIsOutput?: true;
 }
 
 export interface AcpPlanUpdate {
@@ -441,6 +445,9 @@ function distributeRetainedTailAcrossContent(
   });
 }
 
+/** Summary of a call that has said nothing about itself yet. */
+const TOOL_TITLE_PLACEHOLDER = "Tool";
+
 function normalizeToolKind(kind: unknown): string | undefined {
   return typeof kind === "string" && kind.trim().length > 0 ? kind.trim() : undefined;
 }
@@ -525,10 +532,18 @@ function makeToolCallState(
         title,
         detail: fallbackDetail,
         data,
-        fallbackSummary: title ?? "Tool",
+        fallbackSummary: title ?? TOOL_TITLE_PLACEHOLDER,
       })
     : undefined;
   const status = normalizeToolCallStatus(input.status, options?.fallbackStatus);
+  const titleIsPlaceholder =
+    title === undefined && presentation?.summary === TOOL_TITLE_PLACEHOLDER;
+  const detailIsOutput =
+    command === undefined &&
+    normalizedTitle === undefined &&
+    textContent !== undefined &&
+    presentation?.detail !== undefined &&
+    textContent.includes(presentation.detail);
   return {
     toolCallId,
     ...(kind ? { kind } : {}),
@@ -536,6 +551,8 @@ function makeToolCallState(
     ...(status ? { status } : {}),
     ...(command ? { command } : {}),
     ...(presentation?.detail ? { detail: presentation.detail } : {}),
+    ...(titleIsPlaceholder ? { titleIsPlaceholder: true as const } : {}),
+    ...(detailIsOutput ? { detailIsOutput: true as const } : {}),
     data,
   };
 }
@@ -567,10 +584,22 @@ export function mergeToolCallState(
 ): AcpToolCallState {
   const nextKind = typeof next.data.kind === "string" ? next.data.kind : undefined;
   const kind = nextKind ?? previous?.kind;
-  const title = next.title ?? previous?.title;
+  // An update that names nothing (a completion with no title) keeps the title
+  // the call was announced with, and output does not replace what the call was
+  // announced as. A call that only ever sends output (a redrawing progress bar)
+  // keeps following its latest output.
+  const keepTitle = next.title === undefined || (next.titleIsPlaceholder && previous?.title);
+  const title = keepTitle ? previous?.title : next.title;
+  const titleIsPlaceholder = keepTitle ? previous?.titleIsPlaceholder : next.titleIsPlaceholder;
   const status = next.status ?? previous?.status;
   const command = next.command ?? previous?.command;
-  const detail = next.detail ?? previous?.detail;
+  const announced =
+    previous !== undefined &&
+    ((previous.title !== undefined && !previous.titleIsPlaceholder) ||
+      (previous.detail !== undefined && !previous.detailIsOutput));
+  const keepDetail = next.detail === undefined || (next.detailIsOutput && announced);
+  const detail = keepDetail ? previous?.detail : next.detail;
+  const detailIsOutput = keepDetail ? previous?.detailIsOutput : next.detailIsOutput;
   return {
     toolCallId: next.toolCallId,
     ...(kind ? { kind } : {}),
@@ -578,6 +607,8 @@ export function mergeToolCallState(
     ...(status ? { status } : {}),
     ...(command ? { command } : {}),
     ...(detail ? { detail } : {}),
+    ...(title && titleIsPlaceholder ? { titleIsPlaceholder } : {}),
+    ...(detail && detailIsOutput ? { detailIsOutput } : {}),
     data: {
       ...previous?.data,
       ...next.data,

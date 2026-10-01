@@ -552,6 +552,23 @@ describe("toolGroupAction", () => {
       }),
     ).toBe("read");
   });
+
+  it("tells an ACP workspace search from a web search by its tool kind", () => {
+    const search = { label: "Searched code", tone: "tool", itemType: "web_search" } as const;
+    expect(toolGroupAction({ ...search, toolKind: "search" })).toBe("code-search");
+    expect(toolGroupAction({ ...search, toolKind: "fetch" })).toBe("search");
+  });
+
+  it("groups an ACP read-kind call with reads", () => {
+    expect(
+      toolGroupAction({
+        label: "Read a skill",
+        tone: "tool",
+        itemType: "dynamic_tool_call",
+        toolKind: "read",
+      }),
+    ).toBe("read");
+  });
 });
 
 describe("resolveViewedImageAsset", () => {

@@ -70,6 +70,11 @@ import {
   makeAcpToolCallEvent,
 } from "../acp/AcpCoreRuntimeEvents.ts";
 import { parsePermissionRequest } from "../acp/AcpRuntimeModel.ts";
+import {
+  applyHermesToolIdentity,
+  hermesSubagentTaskEvent,
+  readHermesToolMeta,
+} from "../acp/HermesToolActivity.ts";
 import { makeAcpNativeLoggerFactory } from "../acp/AcpNativeLogging.ts";
 import {
   applyHermesAcpModelSelection,
@@ -1139,6 +1144,30 @@ export function makeHermesAdapter(
                 }
 
                 const notificationTurnId = ctx.activeTurnId;
+                // A child Hermes delegated reports through tool-call updates
+                // that become task events for the Agents panel. They are taken
+                // even when no turn is running: a child can finish after the
+                // turn that started it has ended.
+                if (event._tag === "ToolCallUpdated" && !ctx.stopped) {
+                  const child = readHermesToolMeta(event.rawPayload)?.subagent;
+                  if (child !== undefined) {
+                    const childTurnId =
+                      notificationTurnId !== undefined &&
+                      !ctx.interruptedTurnIds.has(notificationTurnId)
+                        ? notificationTurnId
+                        : undefined;
+                    if (childTurnId !== undefined) {
+                      yield* recordTurnActivity(ctx, childTurnId, event);
+                    }
+                    yield* offerRuntimeEvent({
+                      ...hermesSubagentTaskEvent(child, childTurnId),
+                      ...(yield* makeEventStamp()),
+                      provider: PROVIDER,
+                      threadId: ctx.threadId,
+                    });
+                    return;
+                  }
+                }
                 if (
                   notificationTurnId === undefined ||
                   ctx.interruptedTurnIds.has(notificationTurnId)
@@ -1190,18 +1219,30 @@ export function makeHermesAdapter(
                       event.rawPayload,
                     );
                     return;
-                  case "ToolCallUpdated":
+                  case "ToolCallUpdated": {
+                    const hermesTool = readHermesToolMeta(event.rawPayload);
+                    const identified =
+                      hermesTool !== undefined
+                        ? applyHermesToolIdentity(event.toolCall, hermesTool.toolName)
+                        : { toolCall: event.toolCall };
                     yield* offerRuntimeEvent(
                       makeAcpToolCallEvent({
                         stamp,
                         provider: PROVIDER,
                         threadId: ctx.threadId,
                         turnId: notificationTurnId,
-                        toolCall: event.toolCall,
+                        toolCall: identified.toolCall,
+                        ...(identified.itemType !== undefined
+                          ? { itemType: identified.itemType }
+                          : {}),
+                        ...(identified.toolSurface !== undefined
+                          ? { toolSurface: identified.toolSurface }
+                          : {}),
                         rawPayload: event.rawPayload,
                       }),
                     );
                     return;
+                  }
                   case "ContentDelta":
                     // Hermes answers a prompt it absorbed into its own queue
                     // (or used to redirect the running turn) with one fixed

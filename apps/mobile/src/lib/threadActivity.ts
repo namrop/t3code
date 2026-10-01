@@ -97,6 +97,8 @@ export interface WorkLogEntry {
   toolSurface?: import("@t3tools/contracts").ToolActivitySurface;
   toolIcon?: import("@t3tools/contracts").ToolActivityIcon;
   toolSource?: import("@t3tools/contracts").ToolActivitySource;
+  /** ACP tool kind (`read`, `search`, `fetch`, …) when an ACP provider sent one. */
+  toolKind?: string;
   itemType?: ToolLifecycleItemType;
   requestKind?: PendingApproval["requestKind"];
   toolLifecycleStatus?: WorkLogToolLifecycleStatus;
@@ -591,6 +593,10 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   }
   if (toolPresentation.toolSurface) {
     entry.toolSurface = toolPresentation.toolSurface;
+  }
+  const toolKind = isTaskActivity ? null : asTrimmedString(asRecord(payload?.data)?.kind);
+  if (toolKind) {
+    entry.toolKind = toolKind;
   }
   if (toolPresentation.toolIcon) {
     entry.toolIcon = toolPresentation.toolIcon;

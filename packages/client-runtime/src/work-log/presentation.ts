@@ -4,6 +4,7 @@ import {
   type RuntimeItemStatus,
   type ThreadId,
   type ToolActivitySource,
+  type ToolActivitySurface,
   type ToolLifecycleItemType,
 } from "@t3tools/contracts";
 import { classifyMarkdownImageSource } from "@t3tools/client-runtime/markdown-images";
@@ -43,6 +44,9 @@ export interface WorkLogPresentationEntry {
   readonly sourceActivityKind?: string;
   readonly taskId?: string;
   readonly toolSource?: ToolActivitySource;
+  readonly toolSurface?: ToolActivitySurface;
+  /** The ACP tool kind (`read`, `search`, `fetch`, …) an ACP provider sent. */
+  readonly toolKind?: string;
 }
 
 export type ToolGroupAction =
@@ -457,7 +461,9 @@ export function workEntryIndicatesToolSuccess(entry: WorkLogPresentationEntry): 
 function workLogEntryIsLocalCodeSearch(entry: WorkLogPresentationEntry): boolean {
   return (
     entry.itemType === "web_search" &&
-    /\bgrep\b/i.test(normalizeCompactToolLabel(entry.toolTitle ?? entry.label))
+    // ACP separates searching the workspace (`search`) from the web (`fetch`).
+    (entry.toolKind === "search" ||
+      /\bgrep\b/i.test(normalizeCompactToolLabel(entry.toolTitle ?? entry.label)))
   );
 }
 
@@ -478,7 +484,7 @@ export function toolGroupAction(entry: WorkLogPresentationEntry): ToolGroupActio
     entry.itemType === "image_view" ||
     entry.viewedImagePath !== undefined ||
     (entry.itemType === "dynamic_tool_call" &&
-      entry.toolTitle?.trim().toLowerCase() === "read file")
+      (entry.toolTitle?.trim().toLowerCase() === "read file" || entry.toolKind === "read"))
   ) {
     return "read";
   }
