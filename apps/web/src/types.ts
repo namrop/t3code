@@ -1,4 +1,5 @@
-import { imageMimeType } from "@t3tools/shared/image";
+import { audioMimeTypeFromExtension } from "@t3tools/shared/filePreview";
+import { GENERIC_MIME_TYPES, imageMimeType } from "@t3tools/shared/image";
 import type {
   ChatFileAttachment as ContractChatFileAttachment,
   ChatImageAttachment as ContractChatImageAttachment,
@@ -71,6 +72,22 @@ export function isFileAttachment(attachment: ChatAttachment): attachment is Chat
 
 export function isVideoAttachment(attachment: ChatFileAttachment): boolean {
   return videoMimeType(attachment) !== null;
+}
+
+/**
+ * Recordings such as composer voice notes. A recorded `.webm` carries `audio/webm`;
+ * the extension only decides when the picker reported nothing more specific.
+ */
+export function audioAttachmentMimeType(attachment: ChatFileAttachment): string | null {
+  const mimeType = attachment.mimeType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  if (mimeType.startsWith("audio/")) return mimeType;
+  if (mimeType !== "" && !GENERIC_MIME_TYPES.has(mimeType)) return null;
+  const dotIndex = attachment.name.lastIndexOf(".");
+  return dotIndex < 0 ? null : audioMimeTypeFromExtension(attachment.name.slice(dotIndex));
+}
+
+export function isAudioAttachment(attachment: ChatFileAttachment): boolean {
+  return audioAttachmentMimeType(attachment) !== null;
 }
 
 export interface ChatMessage extends Omit<OrchestrationMessage, "attachments"> {

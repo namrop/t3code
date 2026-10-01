@@ -90,6 +90,7 @@ import {
   type ChatMessage,
   type ChatFileAttachment,
   type ChatImageAttachment,
+  isAudioAttachment,
   isFileAttachment,
   isImageAttachment,
   isVideoAttachment,
@@ -140,6 +141,7 @@ import { Button } from "../ui/button";
 import type { QueuedComposerMessage } from "../../queuedMessageStore";
 import { useAssetUrlRefresh, useAssetUrls, useAssetUrlState } from "../../assets/assetUrls";
 import { MediaVideoPlayer } from "../media/MediaVideoPlayer";
+import { VoiceNotePlayer, VoiceNoteTranscript } from "./VoiceNotePlayer";
 import { getVirtualizedScrollFadeClassName } from "../ui/scroll-area";
 import {
   buildAttachmentVideoAsset,
@@ -2164,8 +2166,8 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
                   <span className="min-w-0 flex-1 truncate">{file.name}</span>
                 </>
               );
-              if (file.downloadable !== false) {
-                return (
+              const fileRow =
+                file.downloadable !== false ? (
                   <div key={file.id} className="flex min-w-0 items-center gap-1">
                     <button
                       type="button"
@@ -2192,13 +2194,22 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
                       <TooltipPopup side="top">Download {file.name}</TooltipPopup>
                     </Tooltip>
                   </div>
+                ) : (
+                  <div key={file.id} className="flex min-w-0 items-center gap-2 py-1 text-sm">
+                    {fileIdentity}
+                  </div>
                 );
-              }
-
-              return (
-                <div key={file.id} className="flex min-w-0 items-center gap-2 py-1 text-sm">
-                  {fileIdentity}
+              return isAudioAttachment(file) &&
+                (file.downloadable !== false || file.previewUrl !== undefined) ? (
+                <div key={file.id} className="flex min-w-0 py-1">
+                  <VoiceNotePlayer
+                    attachment={file}
+                    environmentId={ctx.activeThreadEnvironmentId}
+                    fallback={fileRow}
+                  />
                 </div>
+              ) : (
+                fileRow
               );
             })}
             {unknownAttachments.map((attachment) => (
@@ -2221,6 +2232,10 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
             markdownCwd={ctx.markdownCwd}
           />
         </div>
+        {row.voiceNoteTranscripts?.map((transcript, index) => (
+          // oxlint-disable-next-line react/no-array-index-key -- Transcripts arrive in prompt order and are never reordered.
+          <VoiceNoteTranscript key={index} text={transcript} />
+        ))}
       </div>
       <div className="flex w-full max-w-[80%] items-center justify-end pe-1 text-xs tabular-nums opacity-0 transition-opacity duration-200 pointer-coarse:opacity-100 focus-within:opacity-100 group-hover:opacity-100">
         <div className="flex shrink-0 items-center gap-2">
@@ -3671,6 +3686,7 @@ interface UserMessageContextRenderContext {
   reference: ChatMarkdownContextReference;
   annotationImage: ChatImageAttachment | null;
   attachment: ChatImageAttachment | ChatFileAttachment | null;
+  environmentId: EnvironmentId;
   resolvedTheme: "light" | "dark";
   copyMarkdown: string;
   onExpandImage: (image: ChatImageAttachment) => void;
@@ -3767,7 +3783,7 @@ const userMessageContextPresentationRegistry = createContextPresentationRegistry
         const disabled =
           attachment.downloadable === false && (!isVideo || attachment.previewUrl === undefined);
         const size = formatAttachmentSize(record.sizeBytes);
-        return (
+        const chip = (
           <FileChip
             name={record.name}
             size={size}
@@ -3781,6 +3797,19 @@ const userMessageContextPresentationRegistry = createContextPresentationRegistry
             }
             tooltip={`${record.name}\n${size}`}
           />
+        );
+        // A recording plays where its chip would sit; the chip returns if it cannot load.
+        return !isVideo &&
+          isAudioAttachment(attachment) &&
+          (attachment.downloadable !== false || attachment.previewUrl !== undefined) ? (
+          <VoiceNotePlayer
+            attachment={attachment}
+            environmentId={context.environmentId}
+            copyMarkdown={context.copyMarkdown}
+            fallback={chip}
+          />
+        ) : (
+          chip
         );
       },
     },
@@ -3902,7 +3931,7 @@ function UserMessageContextReferenceChip(props: {
   onExpandVideo: (file: ChatFileAttachment) => void;
   onOpenFile: (file: ChatFileAttachment) => void;
 }) {
-  const { resolvedTheme } = use(TimelineRowCtx);
+  const { resolvedTheme, activeThreadEnvironmentId } = use(TimelineRowCtx);
   const copyMarkdown = formatComposerContextReference({
     kind: props.reference.kind,
     contextId: props.reference.contextId as ComposerContextId,
@@ -3912,6 +3941,7 @@ function UserMessageContextReferenceChip(props: {
     reference: props.reference,
     annotationImage: props.annotationImage,
     attachment: props.attachment,
+    environmentId: activeThreadEnvironmentId,
     resolvedTheme,
     copyMarkdown,
     onExpandImage: props.onExpandImage,

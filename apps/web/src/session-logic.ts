@@ -92,6 +92,11 @@ export interface WorkLogEntry {
     workflowId: string | null;
     agentTaskIds: ReadonlyArray<string>;
   };
+  /**
+   * What the agent heard in a voice note the user sent. The timeline shows it
+   * with the user's message rather than as a work row.
+   */
+  voiceNoteTranscript?: string;
 }
 
 const workLogCollapseKey = Symbol();
@@ -675,8 +680,46 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (collapseKey) {
     entry[workLogCollapseKey] = collapseKey;
   }
+  const voiceNoteTranscript = extractVoiceNoteTranscript(activity);
+  if (voiceNoteTranscript !== undefined) {
+    entry.voiceNoteTranscript = voiceNoteTranscript;
+  }
   derivedWorkLogEntryByActivity.set(activity, entry);
   return entry;
+}
+
+const VOICE_NOTE_TRANSCRIPT_TOOL_NAME = "voice_note_transcript";
+// Hermes builds before it named its tool calls sent the transcript under this title only.
+const LEGACY_VOICE_NOTE_TRANSCRIPT_TITLE = "Voice note transcript";
+const QUOTED_TRANSCRIPT_PATTERN = /^(?:\u{1F399}\u{FE0F}?\s*)?"([\s\S]*)"$/u;
+
+/** The transcript Hermes echoes for an audio prompt, or undefined for any other activity. */
+export function extractVoiceNoteTranscript(
+  activity: Pick<OrchestrationThreadActivity, "kind" | "payload">,
+): string | undefined {
+  if (activity.kind !== "tool.updated" && activity.kind !== "tool.completed") return undefined;
+  const payload = asRecord(activity.payload);
+  const data = asRecord(payload?.data);
+  const named = data?.hermesToolName === VOICE_NOTE_TRANSCRIPT_TOOL_NAME;
+  const legacy =
+    !named &&
+    payload?.itemType === "dynamic_tool_call" &&
+    payload.title === LEGACY_VOICE_NOTE_TRANSCRIPT_TITLE &&
+    data?.kind === "other";
+  if (!named && !legacy) return undefined;
+
+  const rawOutput = data?.rawOutput;
+  const rawText = asTrimmedString(rawOutput) ?? asTrimmedString(asRecord(rawOutput)?.content);
+  if (rawText !== null) return rawText;
+
+  const content = Array.isArray(data?.content) ? data.content : [];
+  for (const block of content) {
+    const text = asTrimmedString(asRecord(asRecord(block)?.content)?.text);
+    if (text === null) continue;
+    const unquoted = QUOTED_TRANSCRIPT_PATTERN.exec(text)?.[1]?.trim() ?? text;
+    if (unquoted.length > 0) return unquoted;
+  }
+  return undefined;
 }
 
 /**

@@ -61,6 +61,7 @@ const ASSET_TOKEN_TTL_MS = 60 * 60 * 1000;
 const PROJECT_FAVICON_TOKEN_BUCKET_MS = 30 * 60 * 1000;
 const PROJECT_FAVICON_VERSION_PREFIX = "v";
 const INLINE_VIDEO_MIME_TYPE_PATTERN = /^video\/[\w!#$&^.+-]+$/i;
+const INLINE_AUDIO_MIME_TYPE_PATTERN = /^audio\/[\w!#$&^.+-]+$/i;
 // Extensions a document viewer or audio player may request inline. The extension comes from
 // the attachment id the server assigned, never from the client's mime type.
 const INLINE_PREVIEW_MIME_TYPES: Record<string, string> = {
@@ -535,8 +536,13 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
       // a supported document or audio format inline.
       const extension = parseAttachmentFileExtension(input.resource.attachmentId);
       const isGenericFile = extension !== null;
-      const videoMimeType = input.resource.mimeType?.split(";", 1)[0]?.trim() ?? "";
-      const isVideo = INLINE_VIDEO_MIME_TYPE_PATTERN.test(videoMimeType);
+      const mediaMimeType = input.resource.mimeType?.split(";", 1)[0]?.trim() ?? "";
+      // A player asking for a recording inline gets it like a video: a voice note's
+      // `.webm` is audio, and its extension alone cannot say so.
+      const isMedia =
+        INLINE_VIDEO_MIME_TYPE_PATTERN.test(mediaMimeType) ||
+        (input.resource.disposition === "inline" &&
+          INLINE_AUDIO_MIME_TYPE_PATTERN.test(mediaMimeType));
       const inlinePreviewMimeType =
         input.resource.disposition === "inline" && extension !== null
           ? inlinePreviewMimeTypeForExtension(extension)
@@ -548,14 +554,14 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
         version: 1,
         kind: "attachment",
         attachmentId: input.resource.attachmentId,
-        ...(isGenericFile && !isVideo && inlinePreviewMimeType === undefined
+        ...(isGenericFile && !isMedia && inlinePreviewMimeType === undefined
           ? { download: true }
           : {}),
         ...(input.resource.fileName !== undefined ? { fileName: input.resource.fileName } : {}),
         ...(inlinePreviewMimeType !== undefined
           ? { mimeType: inlinePreviewMimeType }
           : input.resource.mimeType !== undefined
-            ? { mimeType: isVideo ? videoMimeType : input.resource.mimeType }
+            ? { mimeType: isMedia ? mediaMimeType : input.resource.mimeType }
             : {}),
         expiresAt,
       };

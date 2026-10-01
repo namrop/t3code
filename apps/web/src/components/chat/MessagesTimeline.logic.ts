@@ -416,6 +416,8 @@ export type MessagesTimelineRow =
       assistantCopyStreaming: boolean;
       assistantTurnDiffSummary?: TurnDiffSummary | undefined;
       revertTurnCount?: number | undefined;
+      /** What the agent heard in the voice notes this user message carried. */
+      voiceNoteTranscripts?: ReadonlyArray<string> | undefined;
     }
   | {
       kind: "assistant-meta";
@@ -959,7 +961,40 @@ function buildRevertTurnCountByUserMessageId(input: {
   return byUserMessageId;
 }
 
-export function deriveMessagesTimelineRows(input: {
+/**
+ * Moves voice-note transcripts out of the work log and onto the user message that
+ * carried the recording: the transcript is what the agent heard the user say, so it
+ * reads with the message, not behind a "Worked for ..." fold.
+ */
+export function splitVoiceNoteTranscripts(timelineEntries: ReadonlyArray<TimelineEntry>): {
+  readonly timelineEntries: ReadonlyArray<TimelineEntry>;
+  readonly transcriptsByMessageId: ReadonlyMap<string, ReadonlyArray<string>>;
+} {
+  const transcriptsByMessageId = new Map<string, string[]>();
+  const movedEntryIds = new Set<string>();
+  let userMessageId: string | null = null;
+  for (const entry of timelineEntries) {
+    if (entry.kind === "message" && entry.message.role === "user") {
+      userMessageId = entry.message.id;
+      continue;
+    }
+    const transcript = entry.kind === "work" ? entry.entry.voiceNoteTranscript : undefined;
+    if (transcript === undefined || userMessageId === null) continue;
+    const transcripts = transcriptsByMessageId.get(userMessageId) ?? [];
+    transcripts.push(transcript);
+    transcriptsByMessageId.set(userMessageId, transcripts);
+    movedEntryIds.add(entry.id);
+  }
+  return {
+    timelineEntries:
+      movedEntryIds.size === 0
+        ? timelineEntries
+        : timelineEntries.filter((entry) => !movedEntryIds.has(entry.id)),
+    transcriptsByMessageId,
+  };
+}
+
+export function deriveMessagesTimelineRows(rowsInput: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
   latestTurn?: TimelineLatestTurn | null;
   runningTurnId?: TurnId | null;
@@ -976,6 +1011,11 @@ export function deriveMessagesTimelineRows(input: {
   /** Messages sent during the running turn, rendered after the live rows. */
   queuedMessages?: ReadonlyArray<QueuedComposerMessage>;
 }): MessagesTimelineRow[] {
+  const voiceNotes = splitVoiceNoteTranscripts(rowsInput.timelineEntries);
+  const input =
+    voiceNotes.timelineEntries === rowsInput.timelineEntries
+      ? rowsInput
+      : { ...rowsInput, timelineEntries: voiceNotes.timelineEntries };
   const turnDiffSummaryByAssistantMessageId = new Map<MessageId, TurnDiffSummary>();
   for (const summary of input.turnDiffSummaries) {
     if (summary.assistantMessageId) {
@@ -1408,6 +1448,10 @@ export function deriveMessagesTimelineRows(input: {
         timelineEntry.message.role === "user"
           ? revertTurnCountByUserMessageId.get(timelineEntry.message.id)
           : undefined,
+      voiceNoteTranscripts:
+        timelineEntry.message.role === "user"
+          ? voiceNotes.transcriptsByMessageId.get(timelineEntry.message.id)
+          : undefined,
     });
   }
 
@@ -1689,7 +1733,11 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.showAssistantCopyButton === bm.showAssistantCopyButton &&
         a.assistantCopyStreaming === bm.assistantCopyStreaming &&
         a.assistantTurnDiffSummary === bm.assistantTurnDiffSummary &&
-        a.revertTurnCount === bm.revertTurnCount
+        a.revertTurnCount === bm.revertTurnCount &&
+        (a.voiceNoteTranscripts ?? []).length === (bm.voiceNoteTranscripts ?? []).length &&
+        (a.voiceNoteTranscripts ?? []).every(
+          (transcript, index) => transcript === bm.voiceNoteTranscripts?.[index],
+        )
       );
     }
   }

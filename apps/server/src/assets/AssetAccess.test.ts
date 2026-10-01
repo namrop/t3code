@@ -851,6 +851,41 @@ describe("AssetAccess", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("plays a recorded voice note inline and still saves it on request", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      // A composer voice note: WebM, which by extension alone reads as video.
+      const attachmentId = "thread-1-00000000-0000-4000-8000-000000000004-webm";
+      const attachmentPath = path.join(config.attachmentsDir, `${attachmentId}.webm`);
+      yield* fileSystem.makeDirectory(config.attachmentsDir, { recursive: true });
+      yield* fileSystem.writeFile(attachmentPath, new Uint8Array([1, 2, 3]));
+      for (const disposition of ["inline", "attachment"] as const) {
+        const result = yield* issueAssetUrl({
+          resource: {
+            _tag: "attachment",
+            attachmentId,
+            fileName: "Voice note.webm",
+            mimeType: "audio/webm;codecs=opus",
+            disposition,
+          },
+        });
+        const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+        const separatorIndex = suffix.indexOf("/");
+        expect(
+          yield* resolveAsset(suffix.slice(0, separatorIndex), suffix.slice(separatorIndex + 1)),
+        ).toEqual({
+          kind: "file",
+          path: attachmentPath,
+          fileName: "Voice note.webm",
+          mimeType: disposition === "inline" ? "audio/webm" : "audio/webm;codecs=opus",
+          ...(disposition === "attachment" ? { download: true } : {}),
+        });
+      }
+    }).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("keeps inline requests for other attachment types as downloads", () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;
