@@ -29,9 +29,15 @@ describe("resolveHermesAcpModeId", () => {
     expect(resolveHermesAcpModeId("auto-accept-edits")).toBe("accept_edits");
   });
 
-  it("maps every other runtime mode, including undefined, to default", () => {
-    expect(resolveHermesAcpModeId("approval-required")).toBe("default");
-    expect(resolveHermesAcpModeId("auto")).toBe("default");
+  it("maps Auto to dont_ask so Hermes's own judgment decides, not a prompt per edit", () => {
+    expect(resolveHermesAcpModeId("auto")).toBe("dont_ask");
+  });
+
+  it("maps Supervised to supervised so commands ask too, not only edits", () => {
+    expect(resolveHermesAcpModeId("approval-required")).toBe("supervised");
+  });
+
+  it("maps an unset runtime mode to default", () => {
     expect(resolveHermesAcpModeId(undefined)).toBe("default");
   });
 });

@@ -144,12 +144,26 @@ export function buildHermesAcpSpawnInput(
 }
 
 /**
- * Maps T3's runtime mode onto Hermes's three ACP session modes. Mirrors how
- * Grok pins Supervised onto argv so config cannot silently reopen
- * always-approve: Full access is the only mode that reaches `dont_ask`.
+ * Maps T3's runtime mode onto Hermes's ACP session modes.
+ *
+ * - Supervised → `supervised`: Hermes asks before every command and every
+ *   edit, and smart approval never decides.
+ * - Auto → `dont_ask`: edits go through except sensitive paths, commands go
+ *   through Hermes's own gate (smart approval on Sol). Whatever Hermes flags
+ *   and does not approve itself still arrives as a permission request, and
+ *   this adapter shows it rather than answering it (only Full access
+ *   auto-answers).
+ * - Auto-accept edits → `accept_edits`: edits in the project folder and /tmp.
+ * - Full access → `dont_ask`, with this adapter also answering every request.
+ *
+ * Keeper rulings 2026-09-30, Discord 1554984990977040527 and
+ * 1555022276141781065.
  */
 export function resolveHermesAcpModeId(runtimeMode: RuntimeMode | undefined): string {
   switch (runtimeMode) {
+    case "approval-required":
+      return "supervised";
+    case "auto":
     case "full-access":
       return "dont_ask";
     case "auto-accept-edits":

@@ -522,6 +522,62 @@ it.layer(hermesAdapterTestLayer)("makeHermesAdapter against the mock ACP agent",
     }),
   );
 
+  it.effect("shows a permission request Hermes raises under Auto instead of answering it", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("hermes-auto-permission-surfaces");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockHermesWrapper({ T3_ACP_EMIT_TOOL_CALLS: "1" }),
+      );
+      const adapter = yield* makeTestAdapter(wrapperPath);
+      const requestOpened =
+        yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "request.opened" }>>();
+      const turnCompleted = yield* Deferred.make<void>();
+      const eventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) => {
+        if (String(event.threadId) !== String(threadId)) {
+          return Effect.void;
+        }
+        if (event.type === "request.opened") {
+          return Deferred.succeed(requestOpened, event).pipe(Effect.ignore);
+        }
+        if (event.type === "turn.completed") {
+          return Deferred.succeed(turnCompleted, undefined).pipe(Effect.ignore);
+        }
+        return Effect.void;
+      }).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("hermes"),
+        cwd: process.cwd(),
+        runtimeMode: "auto",
+        modelSelection: { instanceId: ProviderInstanceId.make("hermes"), model: "hermes-agent" },
+      });
+
+      const sendTurnFiber = yield* adapter
+        .sendTurn({ threadId, input: "run the flagged command", attachments: [] })
+        .pipe(Effect.forkChild);
+
+      // The request reaches T3 as an approval card rather than being
+      // answered by the adapter, and the turn waits on the user's answer.
+      const opened = yield* withRealTimeout(Deferred.await(requestOpened), 10_000);
+      assert.equal(opened.raw?.method, "session/request_permission");
+      const waiting = (yield* adapter.listSessions()).find(
+        (session) => session.threadId === threadId,
+      );
+      assert.equal(waiting?.status, "running");
+      assert.isFalse(yield* Deferred.isDone(turnCompleted));
+
+      yield* adapter.respondToRequest(
+        threadId,
+        ApprovalRequestId.make(String(opened.requestId)),
+        "decline",
+      );
+      yield* withRealTimeout(Fiber.join(sendTurnFiber), 10_000);
+      yield* Fiber.interrupt(eventsFiber);
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect(
     "reports a failed mid-turn model switch as a warning without touching the still-running original turn",
     () =>
