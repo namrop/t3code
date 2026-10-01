@@ -141,6 +141,34 @@ export function voiceNoteErrorMessage(error: unknown): string {
   }
 }
 
+/** How long the voice bar waits for the recording's upload before handing the draft back. */
+export const VOICE_NOTE_HANDOFF_TIMEOUT_MS = 120_000;
+
+export type VoiceNoteHandoffStep = "wait" | "send" | "release";
+
+/**
+ * What to do with a finished recording the composer has taken. The composer
+ * refuses to send while an attachment is still uploading ("Attachment still
+ * uploading"), so a send attempted the moment the file lands is silently
+ * dropped. Wait for the upload; send when it is ready; otherwise hand the
+ * draft back so the composer shows the failed chip or why sending is blocked.
+ */
+export function voiceNoteHandoffStep(input: {
+  /** The recording is in the draft's files. */
+  readonly landed: boolean;
+  /** The server takes attachments by upload rather than inline. */
+  readonly uploadsToServer: boolean;
+  /** This recording's upload, for the composer's environment; null before it starts. */
+  readonly uploadStatus: "uploading" | "ready" | "failed" | null;
+  /** The composer's send is blocked for any reason. */
+  readonly sendBlocked: boolean;
+}): VoiceNoteHandoffStep {
+  if (!input.landed) return "wait";
+  if (input.uploadStatus === "failed") return "release";
+  if (input.uploadsToServer && input.uploadStatus !== "ready") return "wait";
+  return input.sendBlocked ? "release" : "send";
+}
+
 export type VoiceNotePresentation = {
   readonly showsBar: boolean;
   readonly showsCancel: boolean;

@@ -50,7 +50,11 @@ import {
 } from "@t3tools/client-runtime/text-paste";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
 import { folderDropTarget, resolveDroppedFolderPath } from "./folderDrop";
-import { providerTakesVoiceNotes } from "./composerVoiceNote";
+import {
+  providerTakesVoiceNotes,
+  VOICE_NOTE_HANDOFF_TIMEOUT_MS,
+  voiceNoteHandoffStep,
+} from "./composerVoiceNote";
 import {
   ComposerVoiceNoteBar,
   ComposerVoiceNoteButton,
@@ -5601,19 +5605,48 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     setVoiceNoteWasActive(voiceNoteActive);
     setVoiceNoteFlipBack(!voiceNoteActive);
   }
+  // Sending waits for the recording's upload: the composer refuses to send
+  // while an attachment is still uploading, so an immediate send was dropped.
   useEffect(() => {
     if (!pendingVoiceNoteFile) return;
-    const landed = composerFiles.some(
+    const landedFile = composerFiles.find(
       (attachment) =>
         attachment.file === pendingVoiceNoteFile ||
         (attachment.name === pendingVoiceNoteFile.name &&
           attachment.sizeBytes === pendingVoiceNoteFile.size),
     );
-    if (!landed) return;
+    const upload = landedFile ? uploadsByImageId[landedFile.id] : undefined;
+    const step = voiceNoteHandoffStep({
+      landed: landedFile !== undefined,
+      uploadsToServer: supportsAttachmentUploads,
+      uploadStatus: upload && upload.environmentId === environmentId ? upload.status : null,
+      sendBlocked: isSendDisabled || noProviderAvailable,
+    });
+    if (step === "wait") return;
     setPendingVoiceNoteFile(null);
-    submitComposer();
+    if (step === "send") submitComposer();
     voiceNoteComplete();
-  }, [composerFiles, pendingVoiceNoteFile, submitComposer, voiceNoteComplete]);
+  }, [
+    composerFiles,
+    environmentId,
+    isSendDisabled,
+    noProviderAvailable,
+    pendingVoiceNoteFile,
+    submitComposer,
+    supportsAttachmentUploads,
+    uploadsByImageId,
+    voiceNoteComplete,
+  ]);
+  // An upload that never settles must not leave the bar on "Sending"; the
+  // draft keeps the recording and the regular send button takes over.
+  useEffect(() => {
+    if (!pendingVoiceNoteFile) return;
+    const timer = setTimeout(() => {
+      setPendingVoiceNoteFile(null);
+      voiceNoteComplete();
+    }, VOICE_NOTE_HANDOFF_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [pendingVoiceNoteFile, voiceNoteComplete]);
   // A recording belongs to the thread it started in; the composer persists
   // across threads, so switching threads discards it.
   useEffect(

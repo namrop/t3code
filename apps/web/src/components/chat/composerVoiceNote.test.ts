@@ -15,6 +15,7 @@ import {
   voiceNoteErrorMessage,
   voiceNoteFileName,
   voiceNoteFileType,
+  voiceNoteHandoffStep,
   VoiceNoteRecorder,
   type VoiceNoteMediaRecorder,
   type VoiceNoteState,
@@ -133,6 +134,43 @@ describe("voiceNoteErrorMessage", () => {
       "The microphone is in use by another app.",
     );
     expect(voiceNoteErrorMessage(new Error("boom"))).toBe("Could not start recording.");
+  });
+});
+
+describe("voiceNoteHandoffStep", () => {
+  const base = {
+    landed: true,
+    uploadsToServer: true,
+    uploadStatus: "ready" as const,
+    sendBlocked: false,
+  };
+
+  it("waits until the recording is in the draft", () => {
+    expect(voiceNoteHandoffStep({ ...base, landed: false })).toBe("wait");
+  });
+
+  it("waits while the recording uploads, since the composer cannot send until then", () => {
+    expect(voiceNoteHandoffStep({ ...base, uploadStatus: null, sendBlocked: true })).toBe("wait");
+    expect(voiceNoteHandoffStep({ ...base, uploadStatus: "uploading", sendBlocked: true })).toBe(
+      "wait",
+    );
+  });
+
+  it("sends once the upload is ready and nothing else blocks sending", () => {
+    expect(voiceNoteHandoffStep(base)).toBe("send");
+  });
+
+  it("sends without an upload on servers that take attachments inline", () => {
+    expect(voiceNoteHandoffStep({ ...base, uploadsToServer: false, uploadStatus: null })).toBe(
+      "send",
+    );
+  });
+
+  it("hands the draft back when the upload failed or sending is blocked for another reason", () => {
+    expect(voiceNoteHandoffStep({ ...base, uploadStatus: "failed", sendBlocked: true })).toBe(
+      "release",
+    );
+    expect(voiceNoteHandoffStep({ ...base, sendBlocked: true })).toBe("release");
   });
 });
 
