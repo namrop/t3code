@@ -27,7 +27,10 @@ import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { ServerConfig } from "../../config.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { execScriptSource, writeFakeCli } from "../../testUtils/fakeCli.ts";
-import { resetHermesAcpAuthMethodIdCacheForTests } from "../acp/HermesAcpSupport.ts";
+import {
+  HERMES_AUTH_METHOD_ID_CACHE_TTL_MS,
+  resetHermesAcpAuthMethodIdCacheForTests,
+} from "../acp/HermesAcpSupport.ts";
 import { makeHermesAdapter, selectHermesPermissionOptionId } from "./HermesAdapter.ts";
 
 const decodeHermesSettings = Schema.decodeSync(HermesSettings);
@@ -418,6 +421,57 @@ it.layer(hermesAdapterTestLayer)("makeHermesAdapter against the mock ACP agent",
       // With the auth-method id cached after the first call, the second
       // startSession skips its probe spawn, dropping the total to 3.
       assert.equal(spawnCount, 3);
+    }),
+  );
+
+  it.effect("keeps a cached auth-method id alive while it keeps being used", () =>
+    Effect.gen(function* () {
+      resetHermesAcpAuthMethodIdCacheForTests();
+      const argvLogPath = yield* Effect.promise(async () => {
+        const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "hermes-argv-log-"));
+        return NodePath.join(dir, "argv.log");
+      });
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockHermesWrapper(undefined, { argvLogPath }),
+      );
+      const adapter = yield* makeTestAdapter(wrapperPath);
+      const countSpawns = Effect.promise(() => NodeFSP.readFile(argvLogPath, "utf8")).pipe(
+        Effect.map((raw) => raw.split("\n").filter((line) => line.trim().length > 0).length),
+      );
+      const startAndStop = (name: string) =>
+        Effect.gen(function* () {
+          const threadId = ThreadId.make(name);
+          yield* adapter.startSession({
+            threadId,
+            provider: ProviderDriverKind.make("hermes"),
+            cwd: process.cwd(),
+            runtimeMode: "full-access",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("hermes"),
+              model: "hermes-agent",
+            },
+          });
+          yield* adapter.stopSession(threadId);
+        });
+      const mostOfTtl = `${HERMES_AUTH_METHOD_ID_CACHE_TTL_MS - 60_000} millis` as const;
+
+      // Cold: the auth-method probe plus the session.
+      yield* startAndStop("hermes-auth-slide-1");
+      assert.equal(yield* countSpawns, 2);
+
+      // Each later call lands just inside the TTL measured from the call
+      // before it. By the third call the entry is older than one TTL, so it
+      // survives only because each hit reset its clock.
+      yield* TestClock.adjust(mostOfTtl);
+      yield* startAndStop("hermes-auth-slide-2");
+      yield* TestClock.adjust(mostOfTtl);
+      yield* startAndStop("hermes-auth-slide-3");
+      assert.equal(yield* countSpawns, 4);
+
+      // Unused for longer than the TTL: the next call probes again.
+      yield* TestClock.adjust(`${HERMES_AUTH_METHOD_ID_CACHE_TTL_MS + 60_000} millis`);
+      yield* startAndStop("hermes-auth-slide-4");
+      assert.equal(yield* countSpawns, 6);
     }),
   );
 

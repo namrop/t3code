@@ -51,8 +51,12 @@ const VERSION_PROBE_TIMEOUT_MS = 10_000;
 // `acp --check` only verifies local imports; it never opens a session.
 const CHECK_PROBE_TIMEOUT_MS = 10_000;
 // Model discovery opens (and immediately tears down) a real ACP session, so
-// it is given more room than Grok's initialize-only probe.
-const HERMES_ACP_SESSION_PROBE_TIMEOUT_MS = 15_000;
+// it is given more room than Grok's initialize-only probe. This limit covers
+// only starting that session (initialize, authenticate, session/new). The
+// auth-method lookup that may run first has its own limit in
+// HermesAcpSupport.ts and does not spend this one. On Sol, session/new alone
+// took 5-10s while other Hermes sessions were busy.
+const HERMES_ACP_SESSION_PROBE_TIMEOUT_MS = 30_000;
 
 const HERMES_BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   {
@@ -162,10 +166,15 @@ const runHermesAcpSubcommand = (
  * session (and therefore Hermes's own MCP discovery, unless the caller sets
  * `HERMES_ACP_SKIP_CONFIGURED_MCP=1`), because Hermes only advertises models
  * through `session/new`, not `initialize`.
+ *
+ * Returns `None` when the session does not start within
+ * `sessionStartTimeoutMs`. That limit is applied to the session start alone,
+ * not to the auth-method lookup ahead of it.
  */
 const discoverHermesModelsViaAcpSession = (
   hermesSettings: HermesSettings,
   environment: NodeJS.ProcessEnv,
+  sessionStartTimeoutMs: number,
 ) =>
   Effect.gen(function* () {
     const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -180,14 +189,24 @@ const discoverHermesModelsViaAcpSession = (
         cwd: process.cwd(),
         clientInfo: { name: "t3-code-provider-probe", version: "0.0.0" },
       },
-      (acp) => acp.start(),
+      // The limit wraps only the session start. When the cached auth-method
+      // id has expired, the lookup that re-derives it spawns a separate
+      // `hermes acp` first; timing the whole call let that spawn eat the
+      // session's budget, and the check timed out on every cold cache.
+      (acp) => acp.start().pipe(Effect.timeoutOption(sessionStartTimeoutMs)),
     );
-    return buildHermesModelsFromSessionModelState(started.sessionSetupResult.models ?? null);
+    return Option.map(started, (result) =>
+      buildHermesModelsFromSessionModelState(result.sessionSetupResult.models ?? null),
+    );
   }).pipe(Effect.scoped);
 
 export const checkHermesProviderStatus = Effect.fn("checkHermesProviderStatus")(function* (
   hermesSettings: HermesSettings,
   environment: NodeJS.ProcessEnv = process.env,
+  options?: {
+    /** Overrides the 30s production limit on starting the discovery session; exposed only for focused tests. */
+    readonly sessionProbeTimeoutMs?: number;
+  },
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
@@ -287,10 +306,11 @@ export const checkHermesProviderStatus = Effect.fn("checkHermesProviderStatus")(
       ? parseGenericCliVersion(`${versionOutput.stdout}\n${versionOutput.stderr}`)
       : null;
 
-  const acpExit = yield* discoverHermesModelsViaAcpSession(hermesSettings, environment).pipe(
-    Effect.timeoutOption(HERMES_ACP_SESSION_PROBE_TIMEOUT_MS),
-    Effect.exit,
-  );
+  const acpExit = yield* discoverHermesModelsViaAcpSession(
+    hermesSettings,
+    environment,
+    options?.sessionProbeTimeoutMs ?? HERMES_ACP_SESSION_PROBE_TIMEOUT_MS,
+  ).pipe(Effect.exit);
   const acpModels = Exit.isSuccess(acpExit) ? Option.getOrElse(acpExit.value, () => []) : [];
   const acpFailed = Exit.isFailure(acpExit) || Option.isNone(acpExit.value);
   if (acpFailed) {

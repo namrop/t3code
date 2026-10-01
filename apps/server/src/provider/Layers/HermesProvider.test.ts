@@ -14,10 +14,45 @@ import {
   buildInitialHermesProviderSnapshot,
   checkHermesProviderStatus,
 } from "./HermesProvider.ts";
+import { resetHermesAcpAuthMethodIdCacheForTests } from "../acp/HermesAcpSupport.ts";
 import { execScriptSource, writeFakeCli } from "../../testUtils/fakeCli.ts";
 
 const decodeHermesSettings = Schema.decodeSync(HermesSettings);
 const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
+
+// A stand-in for the Hermes CLI: `acp --check` and `acp --version` print
+// canned text, and bare `acp` execs the mock ACP agent so `session/new`
+// returns model metadata. `env` reaches the mock agent.
+const writeFakeHermesCli = (input: {
+  readonly acp: boolean;
+  readonly env?: Readonly<Record<string, string>>;
+}) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-hermes-probe-" });
+    const mockAgentPath = NodePath.resolve(__dirname, "../../../scripts/acp-mock-agent.ts");
+    return {
+      dir,
+      hermesPath: writeFakeCli({
+        directory: dir,
+        name: "hermes",
+        ...(input.env ? { env: input.env } : {}),
+        source: [
+          'if (process.argv[2] !== "acp") process.exit(1);',
+          'if (process.argv[3] === "--check") {',
+          '  process.stdout.write("Hermes ACP check OK\\n");',
+          "  process.exit(0);",
+          "}",
+          'if (process.argv[3] === "--version") {',
+          '  process.stdout.write("0.21.4\\n");',
+          "  process.exit(0);",
+          "}",
+          ...(input.acp ? [execScriptSource({ scriptPath: mockAgentPath })] : ["process.exit(3);"]),
+          "",
+        ].join("\n"),
+      }),
+    };
+  });
 
 describe("buildHermesModelsFromSessionModelState", () => {
   it("marks the session's current model as default", () => {
@@ -126,38 +161,11 @@ it.layer(NodeServices.layer)("checkHermesProviderStatus", (it) => {
     }),
   );
 
-  // A stand-in for the Hermes CLI: `acp --check` and `acp --version` print
-  // canned text, and bare `acp` execs the mock ACP agent so `session/new`
-  // returns model metadata.
-  const writeFakeHermesCli = (input: { readonly acp: boolean }) =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-hermes-probe-" });
-      const mockAgentPath = NodePath.resolve(__dirname, "../../../scripts/acp-mock-agent.ts");
-      return writeFakeCli({
-        directory: dir,
-        name: "hermes",
-        source: [
-          'if (process.argv[2] !== "acp") process.exit(1);',
-          'if (process.argv[3] === "--check") {',
-          '  process.stdout.write("Hermes ACP check OK\\n");',
-          "  process.exit(0);",
-          "}",
-          'if (process.argv[3] === "--version") {',
-          '  process.stdout.write("0.21.4\\n");',
-          "  process.exit(0);",
-          "}",
-          ...(input.acp ? [execScriptSource({ scriptPath: mockAgentPath })] : ["process.exit(3);"]),
-          "",
-        ].join("\n"),
-      });
-    });
-
   it.effect("reports ready with ACP-discovered models when the session starts", () =>
     Effect.gen(function* () {
       const snapshot = yield* Effect.scoped(
         Effect.gen(function* () {
-          const hermesPath = yield* writeFakeHermesCli({ acp: true });
+          const { hermesPath } = yield* writeFakeHermesCli({ acp: true });
           return yield* checkHermesProviderStatus(
             decodeHermesSettings({ enabled: true, binaryPath: hermesPath }),
           );
@@ -181,7 +189,7 @@ it.layer(NodeServices.layer)("checkHermesProviderStatus", (it) => {
     Effect.gen(function* () {
       const snapshot = yield* Effect.scoped(
         Effect.gen(function* () {
-          const hermesPath = yield* writeFakeHermesCli({ acp: false });
+          const { hermesPath } = yield* writeFakeHermesCli({ acp: false });
           return yield* checkHermesProviderStatus(
             decodeHermesSettings({ enabled: true, binaryPath: hermesPath }),
           );
@@ -193,5 +201,45 @@ it.layer(NodeServices.layer)("checkHermesProviderStatus", (it) => {
       expect(snapshot.version).toBe("0.21.4");
       expect(snapshot.message).toContain("ACP session failed to start");
     }),
+  );
+});
+
+describe("checkHermesProviderStatus session time limit", () => {
+  // Real clock: the probe's time limits have to actually elapse. The mock
+  // makes exactly one `initialize` slow (4s, past the 3s session limit),
+  // whichever spawn answers it first; deleting the marker file re-arms it.
+  it.live("times the session start alone, not the auth-method lookup ahead of it", () =>
+    Effect.gen(function* () {
+      resetHermesAcpAuthMethodIdCacheForTests();
+      const fs = yield* FileSystem.FileSystem;
+      const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-hermes-slow-init-" });
+      const markerPath = NodePath.join(stateDir, "delayed");
+      const { hermesPath } = yield* writeFakeHermesCli({
+        acp: true,
+        env: {
+          T3_ACP_DELAY_FIRST_INITIALIZE_MS: "4000",
+          T3_ACP_DELAY_FIRST_INITIALIZE_STATE_PATH: markerPath,
+        },
+      });
+      const check = checkHermesProviderStatus(
+        decodeHermesSettings({ enabled: true, binaryPath: hermesPath }),
+        process.env,
+        { sessionProbeTimeoutMs: 3000 },
+      );
+
+      // Cold cache: the auth-method lookup spawns first and takes the slow
+      // initialize. The session spawned after it is fast, so the check is
+      // ready even though the whole probe ran past 3s.
+      const cold = yield* check;
+      expect(cold.status).toBe("ready");
+      expect(cold.models.map((model) => model.slug)).toEqual(["grok-4.6", "grok-mock-alt"]);
+
+      // Warm cache: no lookup spawn, so the session's own initialize is the
+      // slow one, and the limit still applies to it.
+      yield* fs.remove(markerPath);
+      const slowSession = yield* check;
+      expect(slowSession.status).toBe("warning");
+      expect(slowSession.message).toContain("ACP session failed to start");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });

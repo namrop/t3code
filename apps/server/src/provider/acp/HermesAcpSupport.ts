@@ -23,13 +23,20 @@ const HERMES_DRIVER_KIND = ProviderDriverKind.make("hermes");
  */
 const HERMES_AUTH_METHOD_ID_PROBE_TIMEOUT_MS = 20_000;
 /**
- * TTL for the module-scope `resolveHermesAcpAuthMethodId` cache. Every
- * `startSession` and every provider status check independently resolve the
- * auth method id; without caching each pays a full extra Hermes spawn
- * (~2s plugin load) purely to re-derive an id that changes only when the
- * user reconfigures Hermes's active provider.
+ * How long a cached `resolveHermesAcpAuthMethodId` entry lives after its
+ * last use. Every `startSession` and every provider status check resolve
+ * the auth method id; on a miss each pays a full extra Hermes spawn (~2s
+ * plugin load) to re-derive an id that changes only when the user
+ * reconfigures Hermes's active provider. Each hit resets the clock, so the
+ * provider health check (every 5 minutes by default) keeps the entry warm
+ * while the server runs. A stale entry costs nothing on Hermes 0.20.5: its
+ * `authenticate` answers `{}` whether or not the id matches (the ACP library
+ * turns its `None` refusal into an empty result) and it keeps no auth state,
+ * so `session/new` runs either way. If a later Hermes reports the mismatch
+ * as an error, {@link withHermesAcpAuthRetry} drops the entry and probes
+ * again.
  */
-const HERMES_AUTH_METHOD_ID_CACHE_TTL_MS = 10 * 60 * 1000;
+export const HERMES_AUTH_METHOD_ID_CACHE_TTL_MS = 60 * 60 * 1000;
 /**
  * Bound (both the runtime's own internal wait and, mirrored, the adapter's
  * mid-turn steer wait — see `HermesAdapter.ts`'s steering branch) on how
@@ -235,7 +242,8 @@ const resolveHermesAcpAuthMethodIdUncached = (input: {
  * Cached wrapper around {@link resolveHermesAcpAuthMethodIdUncached}. The
  * resolved id only changes when the user reconfigures Hermes's active
  * provider, so every `startSession` and provider status check reusing it
- * within the TTL skips a full extra Hermes spawn (~2s plugin load).
+ * within the TTL skips a full extra Hermes spawn (~2s plugin load). The TTL
+ * slides: each hit extends the entry's life from that moment.
  */
 export const resolveHermesAcpAuthMethodId: typeof resolveHermesAcpAuthMethodIdUncached = (input) =>
   Effect.gen(function* () {
@@ -243,6 +251,10 @@ export const resolveHermesAcpAuthMethodId: typeof resolveHermesAcpAuthMethodIdUn
     const cached = hermesAuthMethodIdCache.get(cacheKey);
     const nowMs = yield* Clock.currentTimeMillis;
     if (cached && cached.expiresAtMs > nowMs) {
+      hermesAuthMethodIdCache.set(cacheKey, {
+        authMethodId: cached.authMethodId,
+        expiresAtMs: nowMs + HERMES_AUTH_METHOD_ID_CACHE_TTL_MS,
+      });
       return cached.authMethodId;
     }
     const authMethodId = yield* resolveHermesAcpAuthMethodIdUncached(input);

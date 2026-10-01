@@ -58,6 +58,23 @@ const failPrompt = process.env.T3_ACP_FAIL_PROMPT === "1";
 const emitElicitation = process.env.T3_ACP_EMIT_ELICITATION === "1";
 const failSetSessionModel = process.env.T3_ACP_FAIL_SET_SESSION_MODEL === "1";
 const hangInitialize = process.env.T3_ACP_HANG_INITIALIZE === "1";
+// Delays the `initialize` response by this many ms the first time any spawn
+// answers it, and never again. Simulates the auth-method probe (the first
+// `hermes acp` spawned on a cold cache) being slow while the real session
+// spawned after it is fast. "First" is tracked in a marker file because each
+// spawn is a new process.
+const delayFirstInitializeMs = Number(process.env.T3_ACP_DELAY_FIRST_INITIALIZE_MS ?? "0");
+const delayFirstInitializeStatePath = process.env.T3_ACP_DELAY_FIRST_INITIALIZE_STATE_PATH;
+/** True for exactly one caller across spawns sharing the marker file. */
+function claimFirstInitializeDelay(): boolean {
+  if (!(delayFirstInitializeMs > 0) || !delayFirstInitializeStatePath) return false;
+  try {
+    NodeFS.writeFileSync(delayFirstInitializeStatePath, "delayed", { flag: "wx" });
+    return true;
+  } catch {
+    return false;
+  }
+}
 // Simulates Hermes's active provider having changed since an auth-method id
 // was cached: the first `initialize` offers "stale-method" (which
 // `authenticate` rejects); every later `initialize` offers "fresh-method"
@@ -418,6 +435,9 @@ const program = Effect.gen(function* () {
     Effect.gen(function* () {
       if (hangInitialize) {
         return yield* Effect.never;
+      }
+      if (claimFirstInitializeDelay()) {
+        yield* Effect.sleep(`${delayFirstInitializeMs} millis`);
       }
       if (floodStderr) {
         yield* Effect.promise(
