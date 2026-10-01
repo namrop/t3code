@@ -164,6 +164,28 @@ describe("Hermes tool identity", () => {
     expect(applyHermesToolIdentity(merged, "session_search").toolCall.detail).toBe("voice");
   });
 
+  it("shows why an announced call failed", () => {
+    const start = {
+      toolCallId: "t-1",
+      title: "Long command",
+      status: "inProgress",
+      data: {},
+    } as const;
+    const failed = {
+      toolCallId: "t-1",
+      status: "failed",
+      detail: "Cancelled.",
+      detailIsOutput: true,
+      data: {},
+    } as const;
+    const merged = mergeToolCallState(start, failed);
+    expect(merged.detail).toBe("Cancelled.");
+    // A Hermes tool without an argument-based label keeps the failure text too.
+    expect(applyHermesToolIdentity(merged, "fact_store").toolCall.detail).toBe("Cancelled.");
+    // A finished call that did not fail still keeps what it was announced as.
+    expect(mergeToolCallState(start, { ...failed, status: "completed" }).detail).toBeUndefined();
+  });
+
   it("still names tools it has no special label for", () => {
     const event = toolCallOf(sessionSearchStart);
     const identified = applyHermesToolIdentity(event.toolCall, "fact_store");

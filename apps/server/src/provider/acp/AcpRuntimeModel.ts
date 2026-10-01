@@ -587,7 +587,8 @@ export function mergeToolCallState(
   // An update that names nothing (a completion with no title) keeps the title
   // the call was announced with, and output does not replace what the call was
   // announced as. A call that only ever sends output (a redrawing progress bar)
-  // keeps following its latest output.
+  // keeps following its latest output, and a failure's output is why it
+  // failed, which the row shows.
   const keepTitle = next.title === undefined || (next.titleIsPlaceholder && previous?.title);
   const title = keepTitle ? previous?.title : next.title;
   const titleIsPlaceholder = keepTitle ? previous?.titleIsPlaceholder : next.titleIsPlaceholder;
@@ -597,7 +598,8 @@ export function mergeToolCallState(
     previous !== undefined &&
     ((previous.title !== undefined && !previous.titleIsPlaceholder) ||
       (previous.detail !== undefined && !previous.detailIsOutput));
-  const keepDetail = next.detail === undefined || (next.detailIsOutput && announced);
+  const keepDetail =
+    next.detail === undefined || (next.detailIsOutput && announced && status !== "failed");
   const detail = keepDetail ? previous?.detail : next.detail;
   const detailIsOutput = keepDetail ? previous?.detailIsOutput : next.detailIsOutput;
   return {

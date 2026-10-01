@@ -349,8 +349,11 @@ export function applyHermesToolIdentity(
     titleIsPlaceholder: _placeholder,
     ...rest
   } = toolCall;
-  // Without arguments to read, the generic detail stays, unless it is the output.
-  const detail = presentation.detail ?? (detailIsOutput ? undefined : genericDetail);
+  // Without arguments to read, the generic detail stays, unless it is the
+  // output of a call that did not fail (a failure's output says why).
+  const detail =
+    presentation.detail ??
+    (detailIsOutput && toolCall.status !== "failed" ? undefined : genericDetail);
   return {
     toolCall: {
       ...rest,
