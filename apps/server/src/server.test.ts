@@ -588,6 +588,9 @@ const buildAppUnderTest = (options?: {
       otlpTracesUrl: undefined,
       otlpMetricsUrl: undefined,
       otlpLogsUrl: undefined,
+      speechUrl: undefined,
+      speechModel: ServerConfig.DEFAULT_SPEECH_MODEL,
+      speechVoice: ServerConfig.DEFAULT_SPEECH_VOICE,
       otlpTracesExport: DEFAULT_SIGNAL_EXPORT,
       otlpMetricsExport: DEFAULT_SIGNAL_EXPORT,
       otlpLogsExport: DEFAULT_SIGNAL_EXPORT,
@@ -5304,7 +5307,11 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
   it.effect("accepts websocket rpc handshake with a bootstrapped browser session cookie", () =>
     Effect.gen(function* () {
-      yield* buildAppUnderTest();
+      yield* buildAppUnderTest({
+        config: { speechUrl: new URL("https://speech.test") } as Partial<
+          ServerConfig.ServerConfig["Service"]
+        >,
+      });
 
       const { response: bootstrapResponse, cookie } = yield* bootstrapBrowserSession();
 
@@ -5322,6 +5329,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(response.environment.environmentId, testEnvironmentDescriptor.environmentId);
       assert.equal(response.auth.policy, "desktop-managed-local");
       assert.equal(response.shellResumeCompletionMarker, true);
+      assert.equal(response.replySpeech, true);
       assert.isUndefined(response.shellRevealInFileManager);
       assert.isUndefined(response.shellRevealInFileManagerKind);
       assert.equal(response.threadResumeCompletionMarker, true);

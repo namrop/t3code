@@ -17,6 +17,7 @@ import * as Stream from "effect/Stream";
 import { cast } from "effect/Function";
 import {
   HttpClient,
+  HttpClientRequest,
   HttpClientResponse,
   HttpMiddleware,
   HttpRouter,
@@ -47,6 +48,7 @@ import {
 } from "./auth/http.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import { browserApiCorsAllowedHeaders, browserApiCorsAllowedMethods } from "./httpCors.ts";
+import { prepareReplySpeechText } from "./replySpeech.ts";
 
 const OTLP_TRACES_PROXY_PATH = "/api/observability/v1/traces";
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "::1", "localhost"]);
@@ -368,6 +370,88 @@ export const otlpTracesProxyRouteLayer = HttpRouter.add(
       EnvironmentScopeRequiredError: HttpServerRespondable.toResponse,
     }),
     Effect.withTracerEnabled(false),
+  ),
+);
+
+const ReplySpeechInput = Schema.Struct({ text: Schema.String });
+const MAX_REPLY_SPEECH_INPUT_CHARACTERS = 100_000;
+
+export const replySpeechRouteLayer = HttpRouter.add(
+  "POST",
+  "/api/reply-speech",
+  Effect.gen(function* () {
+    yield* authenticateRawRouteWithScope(AuthOrchestrationReadScope);
+    const config = yield* ServerConfig.ServerConfig;
+    if (config.speechUrl === undefined) {
+      return HttpServerResponse.text("Reply speech is not configured.", { status: 503 });
+    }
+
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const body = yield* request.json.pipe(Effect.orElseSucceed(() => null));
+    const decoded = Schema.decodeUnknownOption(ReplySpeechInput)(body);
+    if (Option.isNone(decoded)) {
+      return HttpServerResponse.text("A reply text value is required.", { status: 400 });
+    }
+    if (decoded.value.text.length > MAX_REPLY_SPEECH_INPUT_CHARACTERS) {
+      return HttpServerResponse.text("Reply text is too large to prepare for speech.", {
+        status: 413,
+      });
+    }
+
+    const input = prepareReplySpeechText(decoded.value.text);
+    if (input.length === 0) {
+      return HttpServerResponse.text("No speakable text was found in this reply.", {
+        status: 400,
+      });
+    }
+
+    const speechUrl = new URL("/v1/audio/speech", config.speechUrl).toString();
+    const httpClient = yield* HttpClient.HttpClient;
+    const audioBuffer = yield* httpClient
+      .execute(
+        HttpClientRequest.post(speechUrl).pipe(
+          HttpClientRequest.bodyJsonUnsafe({
+            model: config.speechModel,
+            input,
+            voice: config.speechVoice,
+            response_format: "mp3",
+            speed: 1,
+          }),
+        ),
+      )
+      .pipe(
+        Effect.flatMap((response) =>
+          response.status >= 200 && response.status < 300
+            ? response.arrayBuffer
+            : Effect.succeed(null),
+        ),
+        Effect.scoped,
+        Effect.catchCause((cause) =>
+          Effect.logWarning("The speech service failed to generate audio.", { cause }).pipe(
+            Effect.as(null),
+          ),
+        ),
+      );
+
+    if (audioBuffer === null) {
+      return HttpServerResponse.text("The speech service failed to generate audio.", {
+        status: 502,
+      });
+    }
+
+    return HttpServerResponse.stream(Stream.fromIterable([new Uint8Array(audioBuffer)]), {
+      headers: {
+        "Cache-Control": "private, no-store",
+        "Content-Type": "audio/mpeg",
+        "X-Content-Type-Options": "nosniff",
+      },
+    });
+  }).pipe(
+    Effect.catchTags({
+      EnvironmentAuthInvalidError: HttpServerRespondable.toResponse,
+      EnvironmentInternalError: HttpServerRespondable.toResponse,
+      EnvironmentScopeRequiredError: HttpServerRespondable.toResponse,
+    }),
   ),
 );
 

@@ -1863,6 +1863,7 @@ const makeWsRpcLayer = (
                 }),
             threadResumeCompletionMarker: true,
             threadSnapshotPagination: true,
+            replySpeech: config.speechUrl !== undefined,
             reasoningMessages: true,
           };
         });

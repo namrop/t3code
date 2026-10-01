@@ -166,6 +166,10 @@ import {
   timelineContentOverflowsViewport,
 } from "./timelineScrollAnchoring";
 import { MessageCopyButton } from "./MessageCopyButton";
+import { MessageListenButton } from "./MessageListenButton";
+import { createReplySpeechPlayback, type ReplySpeechPlaybackState } from "./replySpeechPlayback";
+import { requestReplySpeechAudio } from "./replySpeechRequest";
+import { toastManager } from "../ui/toast";
 import { PierreEntryIcon } from "./PierreEntryIcon";
 import { inferEntryKindFromPath } from "../../pierre-icons";
 import { AssistantSelectionToolbar } from "./AssistantSelectionToolbar";
@@ -303,6 +307,9 @@ interface TimelineRowSharedState {
   onSteerQueuedMessage: (id: string) => void;
   steerQueuedMessageShortcutLabel: string | null;
   onRemoveQueuedMessage: (id: string) => void;
+  replySpeechAvailable: boolean;
+  replySpeechPlaybackState: ReplySpeechPlaybackState;
+  onToggleReplySpeech: (messageId: string, text: string) => void;
 }
 
 interface TimelineRowActivityState {
@@ -529,6 +536,38 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onRemoveQueuedMessage = NOOP_QUEUED_MESSAGE_ACTION,
 }: MessagesTimelineProps) {
   const listIdentityKey = displayThreadKey ?? routeThreadKey;
+  const [replySpeechPlaybackState, setReplySpeechPlaybackState] =
+    useState<ReplySpeechPlaybackState>({ messageId: null, phase: "idle" });
+  const replySpeechPlayback = useMemo(
+    () =>
+      createReplySpeechPlayback({
+        requestAudio: requestReplySpeechAudio,
+        createObjectUrl: (blob) => URL.createObjectURL(blob),
+        revokeObjectUrl: (url) => URL.revokeObjectURL(url),
+        onStateChange: setReplySpeechPlaybackState,
+        onError: (error) =>
+          toastManager.add({
+            type: "error",
+            title: "Could not play reply",
+            description: error.message,
+          }),
+      }),
+    [],
+  );
+  const speechServerConfig = useAtomValue(
+    serverEnvironment.configValueAtom(activeThreadEnvironmentId),
+  );
+  const replySpeechAvailable = speechServerConfig?.replySpeech === true;
+  const onToggleReplySpeech = useCallback(
+    (messageId: string, text: string) => {
+      void replySpeechPlayback.toggle(messageId, text);
+    },
+    [replySpeechPlayback],
+  );
+  useEffect(() => () => replySpeechPlayback.dispose(), [replySpeechPlayback]);
+  // A reply being read aloud stops when the timeline switches to another thread.
+  // oxlint-disable-next-line react/exhaustive-effect-dependencies -- listIdentityKey is the trigger, not an input.
+  useEffect(() => replySpeechPlayback.stop(), [listIdentityKey, replySpeechPlayback]);
   const rememberedPosition = useMemo(
     () => readTimelinePosition(listIdentityKey),
     [listIdentityKey],
@@ -1177,6 +1216,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onSteerQueuedMessage,
       steerQueuedMessageShortcutLabel,
       onRemoveQueuedMessage,
+      replySpeechAvailable,
+      replySpeechPlaybackState,
+      onToggleReplySpeech,
     }),
     [
       readyCitationRequest,
@@ -1213,6 +1255,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onSteerQueuedMessage,
       steerQueuedMessageShortcutLabel,
       onRemoveQueuedMessage,
+      replySpeechAvailable,
+      replySpeechPlaybackState,
+      onToggleReplySpeech,
     ],
   );
   const backgroundWorktreeSetup =
@@ -2487,6 +2532,17 @@ function AssistantMessageMeta({
         showCopyButton={showCopyButton}
         streaming={copyStreaming}
       />
+      {!message.streaming &&
+      ctx.replySpeechAvailable &&
+      typeof message.text === "string" &&
+      message.text.trim().length > 0 ? (
+        <MessageListenButton
+          messageId={message.id}
+          text={message.text}
+          playbackState={ctx.replySpeechPlaybackState}
+          onToggle={ctx.onToggleReplySpeech}
+        />
+      ) : null}
       {!message.streaming && (
         <Tooltip>
           <TooltipTrigger render={<p className="text-muted-foreground text-xs tabular-nums" />}>

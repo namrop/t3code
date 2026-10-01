@@ -2,6 +2,7 @@ import * as ManagedRuntime from "effect/ManagedRuntime";
 import type * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Socket from "effect/unstable/socket/Socket";
+import { HttpClient } from "effect/unstable/http";
 
 import { remoteHttpClientLayer } from "@t3tools/client-runtime/rpc";
 import { makeRelayClientTracingLayer } from "@t3tools/shared/relayTracing";
@@ -36,6 +37,7 @@ type RuntimeLayerSource =
 const primaryHttpRuntime = ManagedRuntime.make(
   PrimaryEnvironmentHttpClient.layer.pipe(Layer.provide(primaryEnvironmentHttpLayer)),
 );
+const primaryRawHttpRuntime = ManagedRuntime.make(primaryEnvironmentHttpLayer);
 
 export type PrimaryHttpEffectRunner = <A, E>(
   effect: Effect.Effect<A, E, PrimaryEnvironmentHttpClient.PrimaryEnvironmentHttpClient>,
@@ -49,6 +51,12 @@ let primaryHttpRunner = livePrimaryHttpRunner;
 export const runPrimaryHttp = <A, E>(
   effect: Effect.Effect<A, E, PrimaryEnvironmentHttpClient.PrimaryEnvironmentHttpClient>,
 ) => primaryHttpRunner(effect);
+
+/** Run a raw primary-environment HTTP request through the same auth and target layer as API calls. */
+export const runPrimaryRawHttp = <A, E>(
+  effect: Effect.Effect<A, E, HttpClient.HttpClient>,
+  signal?: AbortSignal,
+) => primaryRawHttpRuntime.runPromise(effect, signal === undefined ? undefined : { signal });
 
 export function __setPrimaryHttpRunnerForTests(runner?: PrimaryHttpEffectRunner): void {
   primaryHttpRunner = runner ?? livePrimaryHttpRunner;

@@ -111,6 +111,13 @@ const EnvServerConfig = Config.all({
     Config.option,
     Config.map(Option.getOrUndefined),
   ),
+  speechUrl: Config.URL("T3CODE_SPEECH_URL").pipe(Config.option, Config.map(Option.getOrUndefined)),
+  speechModel: Config.String("T3CODE_SPEECH_MODEL").pipe(
+    Config.withDefault(ServerConfig.DEFAULT_SPEECH_MODEL),
+  ),
+  speechVoice: Config.String("T3CODE_SPEECH_VOICE").pipe(
+    Config.withDefault(ServerConfig.DEFAULT_SPEECH_VOICE),
+  ),
   otlpExportIntervalMs: Config.Int("T3CODE_OTLP_EXPORT_INTERVAL_MS").pipe(
     Config.withDefault(10_000),
   ),
@@ -433,6 +440,9 @@ export const resolveServerConfig = (
       otlpTracesUrl: traces?.url,
       otlpMetricsUrl: metrics?.url,
       otlpLogsUrl: logs?.url,
+      speechUrl: env.speechUrl,
+      speechModel: env.speechModel,
+      speechVoice: env.speechVoice,
       otlpTracesExport: traces?.export ?? signalExport,
       otlpMetricsExport: metrics?.export ?? signalExport,
       otlpLogsExport: logs?.export ?? signalExport,
