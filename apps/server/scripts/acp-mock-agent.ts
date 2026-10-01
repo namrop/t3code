@@ -128,6 +128,11 @@ let currentFast = false;
 let promptCount = 0;
 let overlappingFirstPromptId: string | undefined;
 const cancelledSessions = new Set<string>();
+// Prompts that a session/cancel can still turn into "cancelled", by session,
+// and the ones it did. A cancel applies to the prompts running when it arrives,
+// as with a real agent; it does not wait for whichever prompt comes next.
+const cancellablePrompts = new Map<string, Set<number>>();
+const cancelledPrompts = new Set<number>();
 
 function promptIdFromRequestMeta(
   request: Pick<AcpSchema.PromptRequest, "_meta">,
@@ -676,6 +681,9 @@ const program = Effect.gen(function* () {
     Effect.gen(function* () {
       const cancelledSessionId = String(sessionId ?? "mock-session-1");
       cancelledSessions.add(cancelledSessionId);
+      for (const prompt of cancellablePrompts.get(cancelledSessionId) ?? []) {
+        cancelledPrompts.add(prompt);
+      }
       if (completeFirstPromptOnCancel) {
         yield* Deferred.succeed(nativeCancelRequested, undefined);
         yield* agent.client.sessionUpdate({
@@ -738,6 +746,11 @@ const program = Effect.gen(function* () {
         return { stopReason: "cancelled", _meta: { nativeCancel: true } };
       }
 
+      const promptNumber = promptCount;
+      const cancellable = cancellablePrompts.get(requestedSessionId) ?? new Set<number>();
+      cancellablePrompts.set(requestedSessionId, cancellable);
+      cancellable.add(promptNumber);
+
       if (Number.isFinite(promptDelayMs) && promptDelayMs > 0) {
         yield* Effect.sleep(`${promptDelayMs} millis`);
       }
@@ -747,7 +760,11 @@ const program = Effect.gen(function* () {
       // regardless — tests exercising cancelBehavior: "wait-for-prompt"
       // (HermesAdapter's mid-turn steer) rely on this to tell "the real
       // response arrived" apart from "any response arrived".
-      if (cancelledSessions.delete(requestedSessionId)) {
+      // Only a cancel that arrived while this prompt was waiting counts. One
+      // sent before it started, or during an earlier prompt that hangs on
+      // purpose, does not.
+      cancellable.delete(promptNumber);
+      if (cancelledPrompts.delete(promptNumber)) {
         return { stopReason: "cancelled" };
       }
 
