@@ -16,6 +16,8 @@ const requestLogPath = process.env.T3_ACP_REQUEST_LOG_PATH;
 const exitLogPath = process.env.T3_ACP_EXIT_LOG_PATH;
 const antigravityProfile = process.env.T3_ACP_ANTIGRAVITY === "1";
 const emitToolCalls = process.env.T3_ACP_EMIT_TOOL_CALLS === "1";
+// Declare promptCapabilities.audio (Hermes ≥ 2026-10-01 does).
+const declareAudioPrompts = process.env.T3_ACP_PROMPT_AUDIO === "1";
 const emitInterleavedAssistantToolCalls =
   process.env.T3_ACP_EMIT_INTERLEAVED_ASSISTANT_TOOL_CALLS === "1";
 const emitGenericToolPlaceholders = process.env.T3_ACP_EMIT_GENERIC_TOOL_PLACEHOLDERS === "1";
@@ -451,7 +453,11 @@ const program = Effect.gen(function* () {
       }
       return {
         protocolVersion: 1,
-        agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } },
+        agentCapabilities: {
+          loadSession: true,
+          sessionCapabilities: { resume: {} },
+          ...(declareAudioPrompts ? { promptCapabilities: { image: true, audio: true } } : {}),
+        },
         // Grok advertises model state before any session exists; the provider
         // health check reads it from here without authenticating.
         _meta: { modelState: modelState() },

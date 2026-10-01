@@ -5,10 +5,67 @@ import * as EffectAcpErrors from "effect-acp/errors";
 import {
   applyHermesAcpModelSelection,
   buildHermesAcpSpawnInput,
+  hermesAcceptsAudioPrompts,
+  hermesAudioMimeType,
   HERMES_TERMINAL_AUTH_METHOD_ID,
+  isHermesAudioAttachment,
   resolveHermesAcpBaseModelId,
   resolveHermesAcpModeId,
 } from "./HermesAcpSupport.ts";
+
+describe("isHermesAudioAttachment", () => {
+  const file = (name: string, mimeType: string) => ({ type: "file" as const, name, mimeType });
+
+  it("treats audio MIME types as voice notes", () => {
+    expect(isHermesAudioAttachment(file("note.m4a", "audio/mp4"))).toBe(true);
+    expect(isHermesAudioAttachment(file("note.webm", "audio/webm;codecs=opus"))).toBe(true);
+    expect(isHermesAudioAttachment(file("Recording.mp3", "AUDIO/MPEG"))).toBe(true);
+  });
+
+  it("falls back to audio-only extensions when the picker gives no audio type", () => {
+    expect(isHermesAudioAttachment(file("Recording 12.m4a", "application/octet-stream"))).toBe(
+      true,
+    );
+    expect(isHermesAudioAttachment(file("memo.OGG", "application/octet-stream"))).toBe(true);
+  });
+
+  it("leaves video, documents and images alone", () => {
+    expect(isHermesAudioAttachment(file("clip.mp4", "video/mp4"))).toBe(false);
+    expect(isHermesAudioAttachment(file("clip.webm", "application/octet-stream"))).toBe(false);
+    expect(isHermesAudioAttachment(file("notes.txt", "text/plain"))).toBe(false);
+    expect(isHermesAudioAttachment({ type: "image", name: "a.png", mimeType: "image/png" })).toBe(
+      false,
+    );
+  });
+});
+
+describe("hermesAudioMimeType", () => {
+  it("keeps the picker's audio type and derives one from the extension otherwise", () => {
+    expect(hermesAudioMimeType({ name: "a.webm", mimeType: "audio/webm;codecs=opus" })).toBe(
+      "audio/webm;codecs=opus",
+    );
+    expect(
+      hermesAudioMimeType({ name: "Recording.m4a", mimeType: "application/octet-stream" }),
+    ).toBe("audio/mp4");
+    expect(hermesAudioMimeType({ name: "memo.ogg", mimeType: "" })).toBe("audio/ogg");
+  });
+});
+
+describe("hermesAcceptsAudioPrompts", () => {
+  it("is true only when Hermes declares promptCapabilities.audio", () => {
+    expect(
+      hermesAcceptsAudioPrompts({
+        agentCapabilities: { promptCapabilities: { image: true, audio: true } },
+      }),
+    ).toBe(true);
+    expect(
+      hermesAcceptsAudioPrompts({
+        agentCapabilities: { promptCapabilities: { image: true } },
+      }),
+    ).toBe(false);
+    expect(hermesAcceptsAudioPrompts({})).toBe(false);
+  });
+});
 
 describe("resolveHermesAcpBaseModelId", () => {
   it("normalizes empty and custom Hermes model ids", () => {

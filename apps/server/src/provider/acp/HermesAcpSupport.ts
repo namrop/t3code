@@ -309,6 +309,79 @@ const makeHermesAcpRuntimeForAuthMethodId = (
   });
 
 /**
+ * Audio-only containers Hermes's speech-to-text takes
+ * (`tools/transcription_tools.py` SUPPORTED_FORMATS, minus the ones that are
+ * just as often video). Used only when the picker reports no `audio/` type,
+ * which Android's document picker does for some recorder apps.
+ */
+const HERMES_AUDIO_ONLY_EXTENSIONS = new Set([
+  ".aac",
+  ".caf",
+  ".flac",
+  ".m4a",
+  ".mp3",
+  ".mpga",
+  ".oga",
+  ".ogg",
+  ".opus",
+  ".wav",
+]);
+
+/**
+ * Largest recording sent inline as an ACP audio block. Hermes reads ACP over
+ * stdio with a 50 MiB line limit (`acp.core.DEFAULT_STDIO_BUFFER_LIMIT_BYTES`)
+ * and base64 adds a third, so 25 MiB of audio keeps the frame well inside it.
+ * A larger recording stays a path line, which Hermes can still open.
+ */
+export const HERMES_MAX_AUDIO_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
+/** True for a file attachment Hermes should receive as a voice note. */
+export function isHermesAudioAttachment(attachment: {
+  readonly type: string;
+  readonly name: string;
+  readonly mimeType: string;
+}): boolean {
+  if (attachment.type !== "file") return false;
+  const mimeType = attachment.mimeType.split(";", 1)[0]!.trim().toLowerCase();
+  if (mimeType.startsWith("audio/")) return true;
+  if (mimeType !== "" && mimeType !== "application/octet-stream") return false;
+  const dot = attachment.name.lastIndexOf(".");
+  return dot >= 0 && HERMES_AUDIO_ONLY_EXTENSIONS.has(attachment.name.slice(dot).toLowerCase());
+}
+
+const HERMES_AUDIO_EXTENSION_MIME_TYPES: Record<string, string> = {
+  ".aac": "audio/aac",
+  ".caf": "audio/x-caf",
+  ".flac": "audio/flac",
+  ".m4a": "audio/mp4",
+  ".mp3": "audio/mpeg",
+  ".mpga": "audio/mpeg",
+  ".oga": "audio/ogg",
+  ".ogg": "audio/ogg",
+  ".opus": "audio/opus",
+  ".wav": "audio/wav",
+};
+
+/** The audio block's `mimeType`: the picker's when it is audio, else from the extension. */
+export function hermesAudioMimeType(attachment: {
+  readonly name: string;
+  readonly mimeType: string;
+}): string {
+  const mimeType = attachment.mimeType.trim();
+  if (mimeType.toLowerCase().startsWith("audio/")) return mimeType;
+  const dot = attachment.name.lastIndexOf(".");
+  const extension = dot >= 0 ? attachment.name.slice(dot).toLowerCase() : "";
+  return HERMES_AUDIO_EXTENSION_MIME_TYPES[extension] ?? "audio/mpeg";
+}
+
+/** True when Hermes declared `promptCapabilities.audio` in `initialize`. */
+export function hermesAcceptsAudioPrompts(
+  initializeResult: Pick<EffectAcpSchema.InitializeResponse, "agentCapabilities">,
+): boolean {
+  return initializeResult.agentCapabilities?.promptCapabilities?.audio === true;
+}
+
+/**
  * T3's built-in Hermes slug. It stands in for "whatever model Hermes's
  * active provider currently runs" until the ACP session advertises real
  * model ids (e.g. `anthropic:claude-opus-4-8`) through `session/new`.

@@ -25,6 +25,7 @@ import {
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
 import { ServerConfig } from "../../config.ts";
+import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { execScriptSource, writeFakeCli } from "../../testUtils/fakeCli.ts";
 import { resetHermesAcpAuthMethodIdCacheForTests } from "../acp/HermesAcpSupport.ts";
 import { makeHermesAdapter, selectHermesPermissionOptionId } from "./HermesAdapter.ts";
@@ -575,6 +576,86 @@ it.layer(hermesAdapterTestLayer)("makeHermesAdapter against the mock ACP agent",
       yield* withRealTimeout(Fiber.join(sendTurnFiber), 10_000);
       yield* Fiber.interrupt(eventsFiber);
       yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  const sendAudioTurn = (label: string, extraEnv: Record<string, string>) =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make(`hermes-audio-${label}`);
+      const tempDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "hermes-audio-")),
+      );
+      const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockHermesWrapper({ ...extraEnv, T3_ACP_REQUEST_LOG_PATH: requestLogPath }),
+      );
+      const adapter = yield* makeTestAdapter(wrapperPath);
+      const serverConfig = yield* ServerConfig;
+      const bytes = Buffer.from("fake m4a voice note bytes");
+      const attachment = {
+        type: "file" as const,
+        id: `hermes-audio-${label}-0f5e2a1c-3b4d-4e6f-8a9b-1c2d3e4f5a6b`,
+        name: "Recording 12.m4a",
+        mimeType: "audio/mp4",
+        sizeBytes: bytes.length,
+      };
+      const attachmentPath = resolveAttachmentPath({
+        attachmentsDir: serverConfig.attachmentsDir,
+        attachment,
+      });
+      assert.isNotNull(attachmentPath);
+      yield* Effect.promise(async () => {
+        await NodeFSP.mkdir(NodePath.dirname(attachmentPath!), { recursive: true });
+        await NodeFSP.writeFile(attachmentPath!, bytes);
+      });
+
+      const turnCompleted = yield* Deferred.make<void>();
+      const eventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        String(event.threadId) === String(threadId) && event.type === "turn.completed"
+          ? Deferred.succeed(turnCompleted, undefined).pipe(Effect.ignore)
+          : Effect.void,
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("hermes"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: ProviderInstanceId.make("hermes"), model: "hermes-agent" },
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "what did I say?",
+        attachments: [attachment],
+      });
+      yield* withRealTimeout(Deferred.await(turnCompleted), 10_000);
+      yield* Fiber.interrupt(eventsFiber);
+      yield* adapter.stopSession(threadId);
+
+      const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
+      const prompt = requests.find((request) => request.method === "session/prompt");
+      assert.isDefined(prompt);
+      const params = prompt!.params as { prompt: Array<Record<string, unknown>> };
+      // The adapter appends its runtime instructions as a final text block.
+      const last = params.prompt.at(-1);
+      assert.isTrue(String(last?.text ?? "").startsWith("<runtime_info>"));
+      return { blocks: params.prompt.slice(0, -1), bytes };
+    });
+
+  it.effect("sends an attached recording as ACP audio when Hermes accepts audio", () =>
+    Effect.gen(function* () {
+      const { blocks, bytes } = yield* sendAudioTurn("accepted", { T3_ACP_PROMPT_AUDIO: "1" });
+      assert.deepStrictEqual(blocks, [
+        { type: "text", text: "what did I say?" },
+        { type: "audio", data: bytes.toString("base64"), mimeType: "audio/mp4" },
+      ]);
+    }),
+  );
+
+  it.effect("keeps a recording path-only when Hermes does not declare audio", () =>
+    Effect.gen(function* () {
+      const { blocks } = yield* sendAudioTurn("undeclared", {});
+      assert.deepStrictEqual(blocks, [{ type: "text", text: "what did I say?" }]);
     }),
   );
 

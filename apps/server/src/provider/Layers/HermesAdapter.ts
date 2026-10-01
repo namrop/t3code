@@ -75,6 +75,10 @@ import {
   applyHermesAcpModelSelection,
   currentHermesModelIdFromSessionSetup,
   HERMES_CANCEL_TIMEOUT_MS,
+  HERMES_MAX_AUDIO_ATTACHMENT_BYTES,
+  hermesAcceptsAudioPrompts,
+  hermesAudioMimeType,
+  isHermesAudioAttachment,
   resolveHermesAcpBaseModelId,
   resolveHermesAcpModeId,
   withHermesAcpAuthRetry,
@@ -144,6 +148,8 @@ interface HermesSessionContext {
   session: ProviderSession;
   readonly scope: Scope.Closeable;
   readonly acp: AcpSessionRuntime.AcpSessionRuntime["Service"];
+  /** Hermes declared `promptCapabilities.audio`; recordings go as ACP audio. */
+  readonly acceptsAudio: boolean;
   notificationFiber: Fiber.Fiber<void, never> | undefined;
   readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
   readonly pendingUserInputs: Map<ApprovalRequestId, PendingUserInput>;
@@ -1082,6 +1088,7 @@ export function makeHermesAdapter(
             session,
             scope: sessionScope,
             acp,
+            acceptsAudio: hermesAcceptsAudioPrompts(started.initializeResult),
             notificationFiber: undefined,
             pendingApprovals,
             pendingUserInputs,
@@ -1331,9 +1338,55 @@ export function makeHermesAdapter(
                   } satisfies EffectAcpSchema.ContentBlock;
                 }),
             );
+            // Recordings go to Hermes as ACP audio, which it transcribes like a
+            // gateway voice note. Without the capability, or past the inline
+            // size cap, a recording stays the path line ProviderService adds.
+            const audioPromptParts = ctx.acceptsAudio
+              ? yield* Effect.forEach(
+                  (input.attachments ?? []).filter(
+                    (attachment) =>
+                      isHermesAudioAttachment(attachment) &&
+                      attachment.sizeBytes <= HERMES_MAX_AUDIO_ATTACHMENT_BYTES,
+                  ),
+                  (attachment) =>
+                    Effect.gen(function* () {
+                      const attachmentPath = resolveAttachmentPath({
+                        attachmentsDir: serverConfig.attachmentsDir,
+                        attachment,
+                      });
+                      if (!attachmentPath) {
+                        return yield* new ProviderAdapterRequestError({
+                          provider: PROVIDER,
+                          method: "session/prompt",
+                          detail: `Invalid attachment id '${attachment.id}'.`,
+                        });
+                      }
+                      const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
+                        Effect.mapError(
+                          (cause) =>
+                            new ProviderAdapterRequestError({
+                              provider: PROVIDER,
+                              method: "session/prompt",
+                              detail: cause.message,
+                              cause,
+                            }),
+                        ),
+                      );
+                      if (bytes.length > HERMES_MAX_AUDIO_ATTACHMENT_BYTES) {
+                        return undefined;
+                      }
+                      return {
+                        type: "audio",
+                        data: Buffer.from(bytes).toString("base64"),
+                        mimeType: hermesAudioMimeType(attachment),
+                      } satisfies EffectAcpSchema.ContentBlock;
+                    }),
+                )
+              : [];
             const promptParts: Array<EffectAcpSchema.ContentBlock> = [
               ...(text ? [{ type: "text" as const, text }] : []),
               ...imagePromptParts,
+              ...audioPromptParts.filter((part) => part !== undefined),
             ];
             if (promptParts.length === 0) {
               return yield* new ProviderAdapterValidationError({
