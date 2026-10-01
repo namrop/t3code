@@ -57,6 +57,22 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+/**
+ * Tool arguments as an object. Hermes can send a completion's arguments as the
+ * model's JSON string; merged over the start, that string replaces the object
+ * the start carried.
+ */
+function toolArguments(rawInput: unknown): Record<string, unknown> {
+  if (typeof rawInput === "string") {
+    try {
+      return asRecord(JSON.parse(rawInput)) ?? {};
+    } catch {
+      return {};
+    }
+  }
+  return asRecord(rawInput) ?? {};
+}
+
 function text(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
@@ -183,7 +199,7 @@ export function hermesToolPresentation(
   toolName: string,
   rawInput: unknown,
 ): HermesToolPresentation | undefined {
-  const input = asRecord(rawInput) ?? {};
+  const input = toolArguments(rawInput);
   if (toolName.startsWith("browser_")) {
     return present(
       "dynamic_tool_call",
@@ -328,16 +344,18 @@ export function applyHermesToolIdentity(
     return { toolCall: { ...toolCall, data } };
   }
   const {
-    detail: _genericDetail,
-    detailIsOutput: _output,
+    detail: genericDetail,
+    detailIsOutput,
     titleIsPlaceholder: _placeholder,
     ...rest
   } = toolCall;
+  // Without arguments to read, the generic detail stays, unless it is the output.
+  const detail = presentation.detail ?? (detailIsOutput ? undefined : genericDetail);
   return {
     toolCall: {
       ...rest,
       title: presentation.title,
-      ...(presentation.detail !== undefined ? { detail: presentation.detail } : {}),
+      ...(detail !== undefined ? { detail } : {}),
       data,
     },
     itemType: presentation.itemType,

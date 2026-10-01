@@ -138,6 +138,32 @@ describe("Hermes tool identity", () => {
     expect(hermesToolPresentation("read_file", { path: "a.ts" })).toBeUndefined();
   });
 
+  it("reads arguments that arrive as the model's JSON string", () => {
+    // A completion's string arguments replace the start's object when merged.
+    expect(
+      hermesToolPresentation(
+        "search_files",
+        '{"pattern": "pineapple", "target": "files", "path": "/tmp"}',
+      ),
+    ).toEqual({ itemType: "web_search", title: "Searched for files", detail: "pineapple in /tmp" });
+    expect(
+      hermesToolPresentation("delegate_task", '{"tasks": [{"goal": "a"}, {"goal": "b"}]}'),
+    ).toMatchObject({ title: "Started 2 subagents" });
+    expect(hermesToolPresentation("web_search", "not json")).toMatchObject({
+      title: "Searched the web",
+    });
+  });
+
+  it("keeps the start's detail when a completion has nothing to add", () => {
+    const start = toolCallOf(sessionSearchStart).toolCall;
+    const done = toolCallOf(sessionSearchDoneWithoutTitle).toolCall;
+    const merged = mergeToolCallState(
+      { ...start, detail: "voice" },
+      { ...done, data: { ...done.data, rawInput: "not json" } },
+    );
+    expect(applyHermesToolIdentity(merged, "session_search").toolCall.detail).toBe("voice");
+  });
+
   it("still names tools it has no special label for", () => {
     const event = toolCallOf(sessionSearchStart);
     const identified = applyHermesToolIdentity(event.toolCall, "fact_store");
