@@ -425,6 +425,50 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
     }),
   );
 
+  it.effect("keeps the code and data of a plain JSON-RPC error reply to an extension request", () =>
+    Effect.gen(function* () {
+      // The spec's error object, as real agents send it, rather than effect's
+      // `_tag: "Cause"` envelope above. It used to come back as a generic
+      // "Extension request failed" (-32603) with the agent's code and data lost.
+      const { stdio, input, output } = yield* makeInMemoryStdio();
+      const transport = yield* AcpProtocol.makeAcpPatchedProtocol({
+        stdio,
+        serverRequestMethods: new Set(),
+      });
+
+      const response = yield* transport
+        .request("x/private", { hello: "world" })
+        .pipe(Effect.forkScoped);
+      yield* Queue.take(output);
+      yield* Queue.offer(
+        input,
+        encoder.encode(
+          `${encodeUnknownJsonString({
+            jsonrpc: "2.0",
+            id: 1,
+            error: { code: -32602, message: "Invalid params", data: { field: "hello" } },
+          })}\n`,
+        ),
+      );
+
+      const error = yield* Fiber.join(response).pipe(
+        Effect.match({
+          onFailure: (error) => error,
+          onSuccess: () => assert.fail("Expected extension request to fail"),
+        }),
+      );
+      assert.instanceOf(error, AcpError.AcpRequestError);
+      assert.deepInclude(error, {
+        code: -32602,
+        errorMessage: "Invalid params",
+        data: { field: "hello" },
+        method: "x/private",
+        requestId: 1,
+        operation: "receive-response",
+      });
+    }),
+  );
+
   it.effect("preserves numeric ids for inbound extension requests", () =>
     Effect.gen(function* () {
       const { stdio, input, output } = yield* makeInMemoryStdio();

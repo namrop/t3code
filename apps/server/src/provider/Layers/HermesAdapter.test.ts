@@ -1250,6 +1250,112 @@ it.layer(hermesAdapterTestLayer)("makeHermesAdapter against the mock ACP agent",
       }),
   );
 
+  // T3 thread a4f3514a, 2026-10-02: a steer mid-command made T3 cancel the
+  // running prompt, and Hermes answered that prompt with a plain JSON-RPC
+  // "Internal error" (its prompt() crashed and left the session busy). The
+  // reply reached the adapter as a defect, so neither the steer's nor Stop's
+  // drop-and-stop handler ran: the steer died, the turn never settled, and
+  // every later message went into a Hermes session that queued it forever.
+  const makeCancelledPromptErrorHarness = (threadIdValue: string) =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make(threadIdValue);
+      const tempDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "hermes-cancelled-prompt-error-")),
+      );
+      const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockHermesWrapper({
+          T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+          // Long enough for the cancel below to land while turn A is in flight.
+          T3_ACP_PROMPT_DELAY_MS: "300",
+          T3_ACP_FAIL_CANCELLED_PROMPT_WITH_JSONRPC_ERROR: "1",
+        }),
+      );
+      const adapter = yield* makeTestAdapter(wrapperPath);
+
+      const warningEvents: Array<Extract<ProviderRuntimeEvent, { type: "runtime.warning" }>> = [];
+      const completedEvents: Array<Extract<ProviderRuntimeEvent, { type: "turn.completed" }>> = [];
+      const eventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          if (String(event.threadId) !== String(threadId)) return;
+          if (event.type === "runtime.warning") warningEvents.push(event);
+          if (event.type === "turn.completed") completedEvents.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("hermes"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: ProviderInstanceId.make("hermes"), model: "hermes-agent" },
+      });
+      const turnAFiber = yield* adapter
+        .sendTurn({ threadId, input: "turn A", attachments: [] })
+        .pipe(Effect.forkChild);
+      yield* waitForFileContentReal(requestLogPath, 120, '"method":"session/prompt"');
+
+      return {
+        threadId,
+        adapter,
+        requestLogPath,
+        warningEvents,
+        completedEvents,
+        eventsFiber,
+        turnAFiber,
+      };
+    });
+
+  it.effect(
+    "drops a mid-turn steer and stops the session when the cancelled prompt comes back as a JSON-RPC error",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* makeCancelledPromptErrorHarness("hermes-steer-cancelled-prompt-error");
+
+        // Neither call may fail or die: the error reply is an ordinary
+        // failure of turn A's prompt, handled by the steer's drop path.
+        yield* withRealTimeout(
+          h.adapter.sendTurn({ threadId: h.threadId, input: "steer", attachments: [] }),
+          5_000,
+        );
+        yield* withRealTimeout(Fiber.join(h.turnAFiber), 5_000);
+        yield* realPause(50);
+        yield* Fiber.interrupt(h.eventsFiber);
+
+        assert.equal(h.warningEvents.length, 1);
+        const warning = h.warningEvents[0]?.payload.message ?? "";
+        assert.include(warning, "the steer was dropped and the session was stopped");
+        assert.include(warning, "Internal error");
+
+        const requestLog = yield* Effect.promise(() => readJsonLines(h.requestLogPath));
+        assert.equal(
+          requestLog.filter((entry) => entry.method === "session/prompt").length,
+          1,
+          "the dropped steer must not dispatch its own session/prompt",
+        );
+        assert.equal(h.completedEvents.length, 1);
+        assert.equal(h.completedEvents[0]?.payload.state, "failed");
+        assert.isFalse(yield* h.adapter.hasSession(h.threadId));
+      }),
+  );
+
+  it.effect(
+    "stops the session when an interrupt's cancelled prompt comes back as a JSON-RPC error",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* makeCancelledPromptErrorHarness("hermes-interrupt-cancelled-prompt-error");
+
+        yield* withRealTimeout(h.adapter.interruptTurn(h.threadId), 5_000);
+        yield* withRealTimeout(Fiber.join(h.turnAFiber), 5_000);
+        yield* realPause(50);
+        yield* Fiber.interrupt(h.eventsFiber);
+
+        assert.isFalse(yield* h.adapter.hasSession(h.threadId));
+        assert.equal(h.completedEvents.length, 1);
+        assert.equal(h.completedEvents[0]?.payload.state, "failed");
+      }),
+  );
+
   it.effect(
     "fails a turn that produces no content or tool progress once the inactivity timeout passes",
     () =>
