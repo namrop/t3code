@@ -156,6 +156,7 @@ import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as HostResources from "./resourceTelemetry/HostResources.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
+import * as ThreadVisitStore from "./threadVisits/ThreadVisitStore.ts";
 import * as UsageService from "./usage/UsageService.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
@@ -630,6 +631,7 @@ const makeWsRpcLayer = (
       const agentSessionScanner = yield* AgentSessionScanner.AgentSessionScanner;
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
+      const threadVisits = yield* ThreadVisitStore.ThreadVisitStore;
       const rpcClientIds = yield* Ref.make(new Set<RpcClientId>());
       yield* Effect.addFinalizer(() =>
         Ref.get(rpcClientIds).pipe(
@@ -3772,6 +3774,28 @@ const makeWsRpcLayer = (
               ),
             ),
             { "rpc.aggregate": "server" },
+          ),
+        // Fork (namrop/t3code): last-viewed times, synced across devices.
+        [WS_METHODS.threadVisitsVisit]: (input) =>
+          observeRpcEffect(WS_METHODS.threadVisitsVisit, threadVisits.visit(input), {
+            "rpc.aggregate": "threadVisits",
+          }),
+        [WS_METHODS.threadVisitsMarkUnread]: (input) =>
+          observeRpcEffect(WS_METHODS.threadVisitsMarkUnread, threadVisits.markUnread(input), {
+            "rpc.aggregate": "threadVisits",
+          }),
+        [WS_METHODS.subscribeThreadVisits]: (_input) =>
+          observeRpcStream(
+            WS_METHODS.subscribeThreadVisits,
+            Stream.unwrap(
+              Effect.map(threadVisits.subscribe, ({ latest, changes }) =>
+                Stream.concat(
+                  Stream.make({ type: "snapshot" as const, visits: latest }),
+                  changes.pipe(Stream.map((visit) => ({ type: "changed" as const, visit }))),
+                ),
+              ),
+            ),
+            { "rpc.aggregate": "threadVisits" },
           ),
         [WS_METHODS.subscribeResourceTelemetry]: (_input) =>
           observeRpcStream(

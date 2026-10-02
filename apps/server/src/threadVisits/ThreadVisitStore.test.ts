@@ -19,11 +19,12 @@ const later = "2026-10-02T11:00:00.000Z";
 const watchChanges = Effect.gen(function* () {
   const store = yield* ThreadVisitStore.ThreadVisitStore;
   const changes = yield* Queue.unbounded<ThreadVisit>();
-  yield* store.streamChanges.pipe(
+  const subscription = yield* store.subscribe;
+  yield* subscription.changes.pipe(
     Stream.runForEach((change) => Queue.offer(changes, change)),
     Effect.forkScoped({ startImmediately: true }),
   );
-  return changes;
+  return { latest: subscription.latest, changes };
 });
 
 it.layer(NodeServices.layer)("ThreadVisitStore", (it) => {
@@ -54,7 +55,9 @@ it.layer(NodeServices.layer)("ThreadVisitStore", (it) => {
   it.effect("publishes each change once, and nothing for a write that changes nothing", () =>
     Effect.gen(function* () {
       const store = yield* ThreadVisitStore.ThreadVisitStore;
-      const changes = yield* watchChanges;
+      yield* store.visit({ threadId: ThreadId.make("thread-0"), visitedAt: earlier });
+      const { latest, changes } = yield* watchChanges;
+      expect(latest.map((visit) => visit.threadId)).toEqual(["thread-0"]);
       yield* store.visit({ threadId, visitedAt: later });
       yield* store.visit({ threadId, visitedAt: earlier }); // no-op
       yield* store.visit({ threadId, visitedAt: later }); // no-op

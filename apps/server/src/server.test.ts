@@ -39,6 +39,7 @@ import {
   ResolvedKeybindingRule,
   type ServerLifecycleStreamEvent,
   ThreadId,
+  type ThreadVisitsStreamEvent,
   TurnId,
   UsageLimitSourceId,
   WS_METHODS,
@@ -119,6 +120,7 @@ import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as GitManager from "./git/GitManager.ts";
 import * as EnvironmentTheme from "./environmentTheme.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
+import * as ThreadVisitStore from "./threadVisits/ThreadVisitStore.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
@@ -1193,6 +1195,8 @@ const buildAppUnderTest = (options?: {
             requestCatchUp: () => Effect.void,
             ...options?.layers?.agentAwarenessRelay,
           }),
+          // Fork: the real last-viewed store, on its own in-memory database.
+          ThreadVisitStore.layer.pipe(Layer.provide(SqlitePersistenceMemory)),
         ),
       ),
       Layer.provide(
@@ -6781,6 +6785,43 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         type: "keybindingsUpdated",
         payload: { keybindings: [], issues: [] },
       });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("thread visits: a write from one client reaches another client's subscription", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const threadId = ThreadId.make("thread-visits-1");
+      const later = "2026-10-02T12:00:00.000Z";
+      const earlier = "2026-10-02T11:59:59.999Z";
+
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const events = yield* Queue.unbounded<ThreadVisitsStreamEvent>();
+          yield* withWsRpcClient(wsUrl, (watcher) =>
+            watcher[WS_METHODS.subscribeThreadVisits]({}).pipe(
+              Stream.runForEach((event) => Queue.offer(events, event)),
+            ),
+          ).pipe(Effect.forkScoped({ startImmediately: true }));
+          // The snapshot arrives after the subscription is live, so nothing below is missed.
+          assert.deepEqual(yield* Queue.take(events), { type: "snapshot", visits: [] });
+
+          const visited = yield* withWsRpcClient(wsUrl, (writer) =>
+            writer[WS_METHODS.threadVisitsVisit]({ threadId, visitedAt: later }),
+          );
+          assert.equal(visited.visitedAt, later);
+          assert.equal(visited.markedUnread, false);
+          assert.deepEqual(yield* Queue.take(events), { type: "changed", visit: visited });
+
+          const unread = yield* withWsRpcClient(wsUrl, (writer) =>
+            writer[WS_METHODS.threadVisitsMarkUnread]({ threadId, visitedAt: earlier }),
+          );
+          assert.equal(unread.visitedAt, earlier);
+          assert.equal(unread.markedUnread, true);
+          assert.deepEqual(yield* Queue.take(events), { type: "changed", visit: unread });
+        }),
+      );
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

@@ -162,6 +162,7 @@ import * as ResourceAttribution from "./resourceTelemetry/ResourceAttribution.ts
 import * as ResourceMonitorBinary from "./resourceTelemetry/ResourceMonitorBinary.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
+import * as ThreadVisitStore from "./threadVisits/ThreadVisitStore.ts";
 import * as UsageService from "./usage/UsageService.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
 import {
@@ -509,6 +510,8 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   Layer.provideMerge(ProviderAuthServiceLive),
   // Core Services
   Layer.provideMerge(ServerSettingsLayerLive),
+  // Fork: last-viewed times; needs the database provided below.
+  Layer.provideMerge(ThreadVisitStore.layer),
   Layer.provideMerge(CheckpointingLayerLive),
   // `GitHubCli` is the registry's own instance, exposed because the asset route fetches
   // GitHub-hosted pull request media with the repository's credential.
