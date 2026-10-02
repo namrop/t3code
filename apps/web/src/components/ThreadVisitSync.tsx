@@ -44,7 +44,7 @@ function ThreadVisitEnvironmentSync({ environmentId }: { environmentId: Environm
   const { data: state } = useEnvironmentQuery(
     threadVisitsEnvironment.visits({ environmentId, input: {} }),
   );
-  // Rows already merged in this page, by thread key → the server's updatedAt.
+  // Rows already merged in this page, by thread key → the row's version.
   const merged = useRef(new Map<string, string>());
   const lastSnapshot = useRef<ReadonlyArray<ThreadVisit> | null>(null);
 
@@ -53,7 +53,7 @@ function ThreadVisitEnvironmentSync({ environmentId }: { environmentId: Environm
     const rows = threadVisitsToMerge(environmentId, state, merged.current);
     if (rows.length > 0) {
       useUiStateStore.getState().applyRemoteThreadVisits(rows);
-      for (const row of rows) merged.current.set(row.threadKey, row.updatedAt);
+      for (const row of rows) merged.current.set(row.threadKey, row.version);
     }
     // A new snapshot follows every (re)connect: send up whatever is newer here.
     if (state.snapshot === lastSnapshot.current) return;
