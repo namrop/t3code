@@ -712,7 +712,11 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
         `runtime_root=${sh(fixture.runtimeRoot)}`,
         `runtime_parent=${sh(fixture.runtimeParent)}`,
         'rm "$runtime_root/.t3code-wsl-runtime-ready"',
-        'sh -c "sleep 30" "$runtime_root/t3" >/dev/null 2>&1 &',
+        // A stand-in backend: the prune script finds active roots by their path
+        // in /proc/*/cmdline. The trailing `:` keeps the shell (and its $0, the
+        // path) alive; a lone `sleep 30` lets bash-as-sh exec into sleep and
+        // drop the path, so the root would look idle.
+        'sh -c "sleep 30; :" "$runtime_root/t3" >/dev/null 2>&1 &',
         "active_pid=$!",
         "sleep 0.1",
         fixture.installScript(),
@@ -750,7 +754,8 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
         'touch -d "4 minutes ago" "$runtime_parent/sha256-active"',
         'touch -d "3 minutes ago" "$runtime_parent/sha256-old"',
         'touch -d "2 minutes ago" "$runtime_parent/sha256-locked"',
-        'sh -c "sleep 30" "$runtime_parent/sha256-active/t3" >/dev/null 2>&1 &',
+        // `; :` keeps the shell, and the path in its cmdline, alive (see above).
+        'sh -c "sleep 30; :" "$runtime_parent/sha256-active/t3" >/dev/null 2>&1 &',
         "active_pid=$!",
         "(",
         '  exec 9> "$runtime_parent/.sha256-locked.install.lock"',
