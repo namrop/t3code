@@ -55,6 +55,12 @@ const emitStaleXAiPromptCompleteBeforeSecondHang =
 const emitOverlappingXAiPromptCompleteOutOfOrder =
   process.env.T3_ACP_EMIT_OVERLAPPING_XAI_PROMPT_COMPLETE_OUT_OF_ORDER === "1";
 const failPrompt = process.env.T3_ACP_FAIL_PROMPT === "1";
+// Answer a prompt that was cancelled mid-flight with the spec's plain JSON-RPC
+// error object, as Hermes's Python ACP server did on 2026-10-02 when its
+// prompt() raised after a session/cancel. effect-acp's own agent side would
+// send effect's `_tag: "Cause"` envelope instead, which no real agent sends.
+const failCancelledPromptWithJsonRpcError =
+  process.env.T3_ACP_FAIL_CANCELLED_PROMPT_WITH_JSONRPC_ERROR === "1";
 const emitElicitation = process.env.T3_ACP_EMIT_ELICITATION === "1";
 const failSetSessionModel = process.env.T3_ACP_FAIL_SET_SESSION_MODEL === "1";
 const hangInitialize = process.env.T3_ACP_HANG_INITIALIZE === "1";
@@ -154,6 +160,34 @@ function logExit(reason: string): void {
 
 function writeJsonRpcNotification(method: string, params: unknown): void {
   process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
+}
+
+// JSON-RPC ids of incoming session/prompt requests, in arrival order, so a
+// prompt handler can answer its own request by hand (the handler never sees
+// the wire id). Fed from the raw stdin chunks; a line may span chunks.
+const promptRequestIds: Array<string | number> = [];
+let partialIncomingLine = "";
+function recordPromptRequestIds(chunk: string): void {
+  const lines = (partialIncomingLine + chunk).split("\n");
+  partialIncomingLine = lines.pop() ?? "";
+  for (const line of lines) {
+    if (!line.includes('"session/prompt"')) continue;
+    try {
+      const message = JSON.parse(line) as { method?: unknown; id?: unknown };
+      if (
+        message.method === "session/prompt" &&
+        (typeof message.id === "string" || typeof message.id === "number")
+      ) {
+        promptRequestIds.push(message.id);
+      }
+    } catch {
+      // Not a complete JSON-RPC message; nothing to record.
+    }
+  }
+}
+
+function writeJsonRpcError(id: string | number | undefined, error: unknown): void {
+  process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: id ?? null, error })}\n`);
 }
 
 process.once("SIGTERM", () => {
@@ -765,6 +799,17 @@ const program = Effect.gen(function* () {
       // purpose, does not.
       cancellable.delete(promptNumber);
       if (cancelledPrompts.delete(promptNumber)) {
+        if (failCancelledPromptWithJsonRpcError) {
+          yield* Effect.sync(() =>
+            writeJsonRpcError(promptRequestIds[promptNumber - 1], {
+              code: -32603,
+              message: "Internal error",
+              data: { details: "'NoneType' object has no attribute 'startswith'" },
+            }),
+          );
+          // That was this request's only reply; effect-acp must not add one.
+          return yield* Effect.never;
+        }
         return { stopReason: "cancelled" };
       }
 
@@ -1639,7 +1684,7 @@ const program = Effect.gen(function* () {
 }).pipe(
   Effect.provide(
     EffectAcpAgent.layerStdio(
-      requestLogPath
+      requestLogPath || failCancelledPromptWithJsonRpcError
         ? {
             logIncoming: true,
             logger: (event) => {
@@ -1651,11 +1696,14 @@ const program = Effect.gen(function* () {
               }
               const payload = event.payload;
               return Effect.sync(() => {
-                NodeFS.appendFileSync(
-                  requestLogPath,
-                  payload.endsWith("\n") ? payload : `${payload}\n`,
-                  "utf8",
-                );
+                recordPromptRequestIds(payload);
+                if (requestLogPath) {
+                  NodeFS.appendFileSync(
+                    requestLogPath,
+                    payload.endsWith("\n") ? payload : `${payload}\n`,
+                    "utf8",
+                  );
+                }
               });
             },
           }

@@ -376,8 +376,9 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     return Queue.offer(serverQueue, message).pipe(Effect.asVoid);
   };
 
-  const handleExitEncoded = (message: RpcMessage.ResponseExitEncoded) =>
-    Ref.get(extPending).pipe(
+  const handleExitEncoded = (received: RpcMessage.ResponseExitEncoded) => {
+    const message = protocolErrorsAsFailures(received);
+    return Ref.get(extPending).pipe(
       Effect.flatMap((pending) => {
         const pendingRequest = pending.get(String(message.requestId));
         if (!pendingRequest) {
@@ -407,6 +408,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
         );
       }),
     );
+  };
 
   const routeDecodedMessage = (
     message: RpcMessage.FromClientEncoded | RpcMessage.FromServerEncoded,
@@ -617,6 +619,44 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     notify: sendNotification,
   } satisfies AcpPatchedProtocol;
 });
+
+/**
+ * A JSON-RPC error reply as the spec writes it, and as real ACP agents (Hermes,
+ * Grok, Cursor, ...) send it — `{"error": {"code", "message", "data"}}` — comes
+ * out of effect's JSON-RPC decoder as a `Die`. Only effect's own
+ * `{"error": {"_tag": "Cause", ...}}` envelope, which our mock agents send,
+ * decodes to a `Fail`. Left as a defect, the reply skips every typed handler
+ * above the RPC client (`Effect.result`, `mapError`, `catchTag`), and the
+ * defect decoder keeps only `message`, dropping `code` and `data`.
+ *
+ * Re-tag it as a `Fail` carrying the protocol error. `handleExitEncoded`
+ * applies this to every reply: for core requests the RPC error schema
+ * (`AcpSchema.Error`) decodes it and `callRpc` maps it to `AcpRequestError`;
+ * extension requests reach `AcpRequestError.fromProtocolError` directly.
+ */
+function protocolErrorsAsFailures(
+  message: RpcMessage.ResponseExitEncoded,
+): RpcMessage.ResponseExitEncoded {
+  if (message.exit._tag !== "Failure") {
+    return message;
+  }
+  let changed = false;
+  const cause = message.exit.cause.map((reason) => {
+    if (reason._tag !== "Die" || !isProtocolError(reason.defect)) {
+      return reason;
+    }
+    changed = true;
+    const { code, message: errorMessage, data } = reason.defect;
+    return {
+      _tag: "Fail" as const,
+      error:
+        data === undefined
+          ? { code, message: errorMessage }
+          : { code, message: errorMessage, data },
+    };
+  });
+  return changed ? { ...message, exit: { _tag: "Failure", cause } } : message;
+}
 
 function isProtocolError(
   value: unknown,
