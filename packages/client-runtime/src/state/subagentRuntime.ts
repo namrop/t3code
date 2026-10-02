@@ -106,6 +106,8 @@ export function isActiveSubagentStatus(status: RuntimeSubagentStatus): boolean {
 
 const RECENT_ACTIVITY_LIMIT = 6;
 const SUMMARY_CHAR_LIMIT = 180;
+/** A finished agent's result or error, which the work log lets the user expand. */
+const RESULT_CHAR_LIMIT = 20_000;
 const ROSTER_LIMIT = 100;
 
 /**
@@ -122,6 +124,10 @@ export function isBackgroundTaskActivity(payload: Record<string, unknown>): bool
 
 function bounded(value: string): string {
   return value.length <= SUMMARY_CHAR_LIMIT ? value : `${value.slice(0, SUMMARY_CHAR_LIMIT - 1)}…`;
+}
+
+function boundedResult(value: string): string {
+  return value.length <= RESULT_CHAR_LIMIT ? value : `${value.slice(0, RESULT_CHAR_LIMIT - 1)}…`;
 }
 
 /** Appends to the ring buffer, deduping consecutive identical summaries. */
@@ -587,14 +593,15 @@ export function foldSubagentActivities(
         // task.completed, and the completion carries the result summary and
         // final usage the update lacked (review finding: the early return
         // dropped both). Fill-if-missing keeps duplicate completions from
-        // replacing the first result.
-        const summary = asString(payload.summary) ?? asString(payload.detail);
+        // replacing the first result. `detail` is the server's longer copy of
+        // the result (the expanded body); `summary` is its one-line label.
+        const summary = asString(payload.detail) ?? asString(payload.summary);
         if (isTerminalSubagentStatus(agent.status)) {
           if (summary) {
             if (agent.status === "failed") {
-              agent.error = agent.error ?? bounded(summary);
+              agent.error = agent.error ?? boundedResult(summary);
             } else {
-              agent.result = agent.result ?? bounded(summary);
+              agent.result = agent.result ?? boundedResult(summary);
             }
           }
           agent.usage = mergeUsageMax(agent.usage, asUsage(payload.typedUsage));
@@ -604,9 +611,9 @@ export function foldSubagentActivities(
         applyStatus(agent, status, at);
         if (summary) {
           if (status === "failed") {
-            agent.error = agent.error ?? bounded(summary);
+            agent.error = agent.error ?? boundedResult(summary);
           } else {
-            agent.result = bounded(summary);
+            agent.result = boundedResult(summary);
           }
         }
         agent.usage = mergeUsageMax(agent.usage, asUsage(payload.typedUsage));

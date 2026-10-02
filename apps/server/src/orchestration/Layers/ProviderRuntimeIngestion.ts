@@ -188,6 +188,12 @@ function truncateDetail(value: string, limit = 180): string {
   return value.length > limit ? `${value.slice(0, limit - 3)}...` : value;
 }
 
+/**
+ * A finished task's result as kept for the expanded row. The row's label
+ * (`summary`) stays one short line; the body is what the user opens to read.
+ */
+const TASK_RESULT_DETAIL_LIMIT = 20_000;
+
 function normalizeProposedPlanMarkdown(planMarkdown: string | undefined): string | undefined {
   const trimmed = planMarkdown?.trim();
   if (!trimmed) {
@@ -866,7 +872,7 @@ export function runtimeEventToActivities(
             ...(event.payload.summary
               ? {
                   summary: truncateDetail(event.payload.summary),
-                  detail: truncateDetail(event.payload.summary),
+                  detail: truncateDetail(event.payload.summary, TASK_RESULT_DETAIL_LIMIT),
                 }
               : {}),
             ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),

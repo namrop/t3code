@@ -4861,6 +4861,36 @@ describe("ProviderRuntimeIngestion", () => {
     expect(completedPayload?.detail).toBe("Typecheck finished without errors.");
   });
 
+  it("keeps a finished task's whole result in the detail its row expands to", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const result = `Report heading\n${"r".repeat(3_000)}\nLast line.`;
+
+    harness.emit({
+      type: "task.completed",
+      eventId: asEventId("evt-long-task-completed"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-long-task"),
+      payload: { taskId: "long-task-1", status: "completed", summary: result },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-long-task-completed",
+      ),
+    );
+    const completed = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-long-task-completed",
+    );
+    const payload = completed?.payload as Record<string, unknown> | undefined;
+
+    // The label stays one short line; the body keeps the whole result.
+    expect(String(payload?.summary)).toHaveLength(180);
+    expect(payload?.detail).toBe(result);
+  });
+
   it("titles task completion from task.started when no progress event carried the name", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

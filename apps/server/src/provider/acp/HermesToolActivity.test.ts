@@ -274,6 +274,15 @@ describe("Hermes subagents", () => {
     });
   });
 
+  it("passes a finished child's whole reply on, past the progress-text limit", () => {
+    const reply = `First line.\n${"z".repeat(8_000)}`;
+    const done = readHermesToolMeta(
+      childUpdate({ event: "completed", status: "completed", summary: reply, ...identity })
+        .rawPayload,
+    )?.subagent;
+    expect(hermesSubagentTaskEvent(done!, undefined).payload).toMatchObject({ summary: reply });
+  });
+
   it("keeps a nested child under the child that started it", () => {
     const nested = readHermesToolMeta(
       childUpdate({ event: "started", id: "child-2", goal: "Look deeper", parentId: "child-1" })

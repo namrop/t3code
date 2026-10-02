@@ -131,6 +131,20 @@ describe("foldSubagentActivities", () => {
     expect(agent.completedAt).not.toBeNull();
   });
 
+  it("keeps a finished agent's whole result, not its one-line label", () => {
+    const result = `Report heading\n${"r".repeat(3_000)}\nLast line.`;
+    const agents = fold([
+      activity("task.started", { taskId: "task-long", title: "Write the report" }),
+      activity("task.completed", {
+        taskId: "task-long",
+        status: "completed",
+        summary: `${result.slice(0, 177)}...`,
+        detail: result,
+      }),
+    ]);
+    expect(agents[0]?.result).toBe(result);
+  });
+
   it("progress can create an agent when its start row aged out of retention", () => {
     const agents = fold([
       activity("task.progress", {

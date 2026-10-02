@@ -50,6 +50,8 @@ type HermesTaskEvent =
 const DETAIL_MAX_CHARS = 200;
 const TASK_TITLE_MAX_CHARS = 120;
 const TASK_TEXT_MAX_CHARS = 5_000;
+/** A finished subagent's whole reply, which the work log lets the user expand. */
+const TASK_RESULT_MAX_CHARS = 20_000;
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -420,7 +422,7 @@ export function hermesSubagentTaskEvent(
         payload: {
           ...linkage,
           status: COMPLETED_STATUS.get(child.status ?? "completed") ?? "failed",
-          ...(summary !== undefined ? { summary: clip(summary, TASK_TEXT_MAX_CHARS) } : {}),
+          ...(summary !== undefined ? { summary: clip(summary, TASK_RESULT_MAX_CHARS) } : {}),
         },
         ...attribution,
       };
