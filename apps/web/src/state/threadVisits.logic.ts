@@ -13,13 +13,25 @@ import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import type { RemoteThreadVisit } from "../uiStateStore";
 
 export interface ThreadVisitToMerge extends RemoteThreadVisit {
-  /** The server's change time, remembered so the same row is not merged twice. */
+  /** Identifies this version of the row, remembered so it is not merged twice. */
+  readonly version: string;
+}
+
+/**
+ * A row's version: its change time and its content, so two writes that land
+ * in the same millisecond are still told apart.
+ */
+export function threadVisitVersion(visit: {
   readonly updatedAt: string;
+  readonly visitedAt: string;
+  readonly markedUnread: boolean;
+}): string {
+  return `${visit.updatedAt}|${visit.visitedAt}|${visit.markedUnread ? "unread" : "visit"}`;
 }
 
 /**
  * Server rows this page has not merged yet, keyed for the local store.
- * `merged` holds the `updatedAt` of each row already merged, by thread key.
+ * `merged` holds the version of each row already merged, by thread key.
  * A row merged once is never replayed, so an old mark-unread cannot undo a
  * newer local visit after a reconnect.
  */
@@ -31,12 +43,13 @@ export function threadVisitsToMerge(
   const rows: ThreadVisitToMerge[] = [];
   for (const visit of Object.values(state.byThreadId)) {
     const threadKey = scopedThreadKey({ environmentId, threadId: visit.threadId });
-    if (merged.get(threadKey) === visit.updatedAt) continue;
+    const version = threadVisitVersion(visit);
+    if (merged.get(threadKey) === version) continue;
     rows.push({
       threadKey,
       visitedAt: visit.visitedAt,
       markedUnread: visit.markedUnread,
-      updatedAt: visit.updatedAt,
+      version,
     });
   }
   return rows;

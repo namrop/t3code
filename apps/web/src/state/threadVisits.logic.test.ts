@@ -2,7 +2,11 @@ import { EMPTY_THREAD_VISITS } from "@t3tools/client-runtime/state/threadVisits"
 import { EnvironmentId, ThreadId, type ThreadVisit } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { threadVisitsToMerge, threadVisitsToUpload } from "./threadVisits.logic";
+import {
+  threadVisitsToMerge,
+  threadVisitsToUpload,
+  threadVisitVersion,
+} from "./threadVisits.logic";
 
 const environmentId = EnvironmentId.make("env-1");
 const row = (
@@ -21,16 +25,23 @@ describe("threadVisitsToMerge", () => {
   it("returns rows not merged yet, keyed for the local store, and skips rows already merged", () => {
     const a = row("thread-a", "2026-10-02T10:00:00.000Z", "2026-10-02T10:00:01.000Z", true);
     const b = row("thread-b", "2026-10-02T11:00:00.000Z", "2026-10-02T11:00:01.000Z");
-    const merged = new Map([["env-1:thread-a", a.updatedAt]]);
+    const merged = new Map([["env-1:thread-a", threadVisitVersion(a)]]);
     expect(threadVisitsToMerge(environmentId, stateOf([a, b]), merged)).toEqual([
       {
         threadKey: "env-1:thread-b",
         visitedAt: b.visitedAt,
         markedUnread: false,
-        updatedAt: b.updatedAt,
+        version: threadVisitVersion(b),
       },
     ]);
     expect(threadVisitsToMerge(environmentId, EMPTY_THREAD_VISITS, merged)).toEqual([]);
+  });
+
+  it("merges a second write that lands in the same millisecond as the one before", () => {
+    const visited = row("thread-a", "2026-10-02T10:00:00.000Z", "2026-10-02T10:00:01.000Z");
+    const unread = row("thread-a", "2026-10-02T09:59:59.999Z", "2026-10-02T10:00:01.000Z", true);
+    const merged = new Map([["env-1:thread-a", threadVisitVersion(visited)]]);
+    expect(threadVisitsToMerge(environmentId, stateOf([unread]), merged)).toHaveLength(1);
   });
 });
 
