@@ -295,6 +295,54 @@ export function markThreadUnread(
   };
 }
 
+/** One row from a server that keeps last-viewed times (fork: thread visits). */
+export interface RemoteThreadVisit {
+  readonly threadKey: string;
+  readonly visitedAt: string;
+  readonly markedUnread: boolean;
+}
+
+/**
+ * Merge rows from the server into the local last-viewed times. A mark-unread
+ * row sets the time exactly, even backwards; any other row keeps the later of
+ * the two, as a local visit does. Callers pass only rows they have not merged
+ * before, so an old mark-unread is never replayed over a newer local visit.
+ */
+export function applyRemoteThreadVisits(
+  state: UiState,
+  rows: ReadonlyArray<RemoteThreadVisit>,
+): UiState {
+  let next = state;
+  for (const row of rows) {
+    if (!row.markedUnread) {
+      next = markThreadVisited(next, row.threadKey, row.visitedAt);
+      continue;
+    }
+    if (!Number.isFinite(Date.parse(row.visitedAt))) continue;
+    if (next.threadLastVisitedAtById[row.threadKey] === row.visitedAt) continue;
+    next = {
+      ...next,
+      threadLastVisitedAtById: { ...next.threadLastVisitedAtById, [row.threadKey]: row.visitedAt },
+    };
+  }
+  return next;
+}
+
+/**
+ * Where a local visit or mark-unread is also sent. Set while a server that keeps
+ * last-viewed times is connected; null leaves the times in this browser only.
+ */
+export interface ThreadVisitSink {
+  readonly visit: (threadKey: string, visitedAt: string) => void;
+  readonly markUnread: (threadKey: string, visitedAt: string) => void;
+}
+
+let threadVisitSink: ThreadVisitSink | null = null;
+
+export function setThreadVisitSink(sink: ThreadVisitSink | null): void {
+  threadVisitSink = sink;
+}
+
 export function setThreadChangedFilesExpanded(
   state: UiState,
   threadId: string,
@@ -426,6 +474,8 @@ export function reorderProjects(
 interface UiStateStore extends UiState {
   markThreadVisited: (threadId: string, visitedAt: string) => void;
   markThreadUnread: (threadId: string, latestTurnCompletedAt: string | null | undefined) => void;
+  /** Merge server rows; never sent back to the server. */
+  applyRemoteThreadVisits: (rows: ReadonlyArray<RemoteThreadVisit>) => void;
   setThreadChangedFilesExpanded: (threadId: string, turnId: string, expanded: boolean) => void;
   setDefaultAdvertisedEndpointKey: (key: string | null) => void;
   setSidebarProjectScopeKey: (projectKey: string | null) => void;
@@ -438,12 +488,24 @@ interface UiStateStore extends UiState {
   ) => void;
 }
 
-export const useUiStateStore = create<UiStateStore>((set) => ({
+export const useUiStateStore = create<UiStateStore>((set, get) => ({
   ...readPersistedState(),
-  markThreadVisited: (threadId, visitedAt) =>
-    set((state) => markThreadVisited(state, threadId, visitedAt)),
-  markThreadUnread: (threadId, latestTurnCompletedAt) =>
-    set((state) => markThreadUnread(state, threadId, latestTurnCompletedAt)),
+  // Each local write also goes to the sink, but only when it changed the local
+  // time: a visit already covered locally was sent when it was first recorded,
+  // and the next snapshot re-sends anything the server missed.
+  markThreadVisited: (threadId, visitedAt) => {
+    const before = get().threadLastVisitedAtById[threadId];
+    set((state) => markThreadVisited(state, threadId, visitedAt));
+    const after = get().threadLastVisitedAtById[threadId];
+    if (after !== undefined && after !== before) threadVisitSink?.visit(threadId, after);
+  },
+  markThreadUnread: (threadId, latestTurnCompletedAt) => {
+    const before = get().threadLastVisitedAtById[threadId];
+    set((state) => markThreadUnread(state, threadId, latestTurnCompletedAt));
+    const after = get().threadLastVisitedAtById[threadId];
+    if (after !== undefined && after !== before) threadVisitSink?.markUnread(threadId, after);
+  },
+  applyRemoteThreadVisits: (rows) => set((state) => applyRemoteThreadVisits(state, rows)),
   setThreadChangedFilesExpanded: (threadId, turnId, expanded) =>
     set((state) => setThreadChangedFilesExpanded(state, threadId, turnId, expanded)),
   setDefaultAdvertisedEndpointKey: (key) =>

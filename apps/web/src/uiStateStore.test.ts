@@ -2,6 +2,7 @@ import { ProjectId, ThreadId } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
+  applyRemoteThreadVisits,
   legacyProjectCwdPreferenceKey,
   markThreadUnread,
   markThreadVisited,
@@ -15,7 +16,9 @@ import {
   setProjectExpanded,
   setSidebarProjectScopeKey,
   setThreadChangedFilesExpanded,
+  setThreadVisitSink,
   type UiState,
+  useUiStateStore,
 } from "./uiStateStore";
 
 function makeUiState(overrides: Partial<UiState> = {}): UiState {
@@ -361,5 +364,53 @@ describe("uiStateStore persistence", () => {
       localStorageStub.getItem(PERSISTED_STATE_KEY) ?? "{}",
     ) as PersistedUiState;
     expect(resolveProjectExpanded(persisted.projectExpandedById ?? {}, ["unknown"])).toBe(true);
+  });
+});
+
+describe("thread visits from and to a server", () => {
+  const key = "env-1:thread-1";
+  const earlier = "2026-10-02T10:59:59.999Z";
+  const later = "2026-10-02T11:00:00.000Z";
+
+  it("merges a remote visit only forward, and a remote mark-unread exactly", () => {
+    const local = makeUiState({ threadLastVisitedAtById: { [key]: later } });
+    expect(
+      applyRemoteThreadVisits(local, [{ threadKey: key, visitedAt: earlier, markedUnread: false }]),
+    ).toBe(local);
+    const unread = applyRemoteThreadVisits(local, [
+      { threadKey: key, visitedAt: earlier, markedUnread: true },
+    ]);
+    expect(unread.threadLastVisitedAtById[key]).toBe(earlier);
+    const read = applyRemoteThreadVisits(unread, [
+      { threadKey: key, visitedAt: later, markedUnread: false },
+    ]);
+    expect(read.threadLastVisitedAtById[key]).toBe(later);
+    expect(
+      applyRemoteThreadVisits(read, [{ threadKey: key, visitedAt: "soon", markedUnread: true }]),
+    ).toBe(read);
+  });
+
+  it("sends a local write to the sink only when it changed the local time; remote merges are not sent", () => {
+    const sent: string[] = [];
+    setThreadVisitSink({
+      visit: (threadKey, visitedAt) => sent.push(`visit ${threadKey} ${visitedAt}`),
+      markUnread: (threadKey, visitedAt) => sent.push(`unread ${threadKey} ${visitedAt}`),
+    });
+    try {
+      const store = useUiStateStore.getState();
+      store.markThreadVisited("env-1:thread-sink", later);
+      store.markThreadVisited("env-1:thread-sink", earlier); // already covered
+      store.markThreadUnread("env-1:thread-sink", later);
+      store.applyRemoteThreadVisits([
+        { threadKey: "env-1:thread-sink", visitedAt: later, markedUnread: false },
+      ]);
+      expect(sent).toEqual([
+        `visit env-1:thread-sink ${later}`,
+        `unread env-1:thread-sink ${earlier}`,
+      ]);
+      expect(useUiStateStore.getState().threadLastVisitedAtById["env-1:thread-sink"]).toBe(later);
+    } finally {
+      setThreadVisitSink(null);
+    }
   });
 });

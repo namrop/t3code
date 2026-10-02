@@ -144,6 +144,10 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   /** Server understands thread.auto-settle.set (per-thread auto-settle off).
       Same version-skew contract as threadSettlement. */
   threadAutoSettleOptOut: Schema.optionalKey(Schema.Boolean),
+  /** Fork (namrop/t3code): server keeps when each thread was last viewed and streams
+      changes (threadVisits.visit / .markUnread, subscribeThreadVisits). Absent on
+      other servers, so clients keep last-viewed times in the browser only. */
+  threadVisits: Schema.optionalKey(Schema.Boolean),
   /** Server understands regenerateTitle on thread.meta.update. Absent on
       older servers, so clients hide the action instead of sending it. */
   threadTitleRegeneration: Schema.optionalKey(Schema.Boolean),

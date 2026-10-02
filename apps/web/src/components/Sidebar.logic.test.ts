@@ -18,6 +18,7 @@ import {
   getFallbackThreadIdAfterDelete,
   getProjectSortTimestamp,
   hasUnseenCompletion,
+  resolveOpenThreadVisitAt,
   isContextMenuPointerDown,
   isSidebarNestedLinkClick,
   isSidebarThreadWorking,
@@ -382,6 +383,40 @@ describe("hasUnseenCompletion", () => {
         session: null,
       }),
     ).toBe(false);
+  });
+});
+
+describe("resolveOpenThreadVisitAt", () => {
+  const createdAt = "2026-03-09T09:00:00.000Z";
+
+  it("stamps a finished turn at its completion", () => {
+    expect(resolveOpenThreadVisitAt({ latestTurn: makeLatestTurn(), createdAt })).toBe(
+      "2026-03-09T10:05:00.000Z",
+    );
+  });
+
+  it("stamps a turn still working at its request, and the thread at creation without a turn", () => {
+    const working = makeLatestTurn({ completedAt: null });
+    expect(resolveOpenThreadVisitAt({ latestTurn: working, createdAt })).toBe(working.requestedAt);
+    expect(resolveOpenThreadVisitAt({ latestTurn: null, createdAt })).toBe(createdAt);
+  });
+
+  it("gives a thread opened while working, then left, its Done badge when the turn finishes", () => {
+    const lastVisitedAt = resolveOpenThreadVisitAt({
+      latestTurn: makeLatestTurn({ completedAt: null }),
+      createdAt,
+    });
+    expect(
+      hasUnseenCompletion({
+        hasActionableProposedPlan: false,
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
+        interactionMode: "default",
+        latestTurn: makeLatestTurn(),
+        lastVisitedAt,
+        session: null,
+      }),
+    ).toBe(true);
   });
 });
 

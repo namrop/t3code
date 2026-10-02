@@ -276,6 +276,12 @@ import {
   SourceControlRepositoryLookupInput,
 } from "./sourceControl.ts";
 import { VcsError } from "./vcs.ts";
+import {
+  ThreadVisitInput,
+  ThreadVisitsError,
+  ThreadVisitsStreamEvent,
+  ThreadVisit,
+} from "./threadVisits.ts";
 
 export const WS_METHODS = {
   // Project registry methods
@@ -447,6 +453,10 @@ export const WS_METHODS = {
   subscribeServerLifecycle: "subscribeServerLifecycle",
   subscribeAuthAccess: "subscribeAuthAccess",
   subscribeBackgroundPolicy: "subscribeBackgroundPolicy",
+  // Fork (namrop/t3code): thread visits, synced across devices.
+  threadVisitsVisit: "threadVisits.visit",
+  threadVisitsMarkUnread: "threadVisits.markUnread",
+  subscribeThreadVisits: "subscribeThreadVisits",
   subscribeResourceTelemetry: "subscribeResourceTelemetry",
 } as const;
 
@@ -1399,6 +1409,27 @@ const WsSubscribeAuthAccessRpc = Rpc.make(WS_METHODS.subscribeAuthAccess, {
   stream: true,
 });
 
+/** Record a visit: the stored time only moves forward. Returns the stored row. */
+const WsThreadVisitsVisitRpc = Rpc.make(WS_METHODS.threadVisitsVisit, {
+  payload: ThreadVisitInput,
+  success: ThreadVisit,
+  error: Schema.Union([ThreadVisitsError, EnvironmentAuthorizationError]),
+});
+
+/** Mark a thread unread: sets the stored time exactly, even backwards. */
+const WsThreadVisitsMarkUnreadRpc = Rpc.make(WS_METHODS.threadVisitsMarkUnread, {
+  payload: ThreadVisitInput,
+  success: ThreadVisit,
+  error: Schema.Union([ThreadVisitsError, EnvironmentAuthorizationError]),
+});
+
+export const WsSubscribeThreadVisitsRpc = Rpc.make(WS_METHODS.subscribeThreadVisits, {
+  payload: Schema.Struct({}),
+  success: ThreadVisitsStreamEvent,
+  error: Schema.Union([ThreadVisitsError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
 const WsSubscribeBackgroundPolicyRpc = Rpc.make(WS_METHODS.subscribeBackgroundPolicy, {
   payload: Schema.Struct({}),
   success: BackgroundPolicySnapshot,
@@ -1551,6 +1582,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubscribeServerLifecycleRpc,
   WsSubscribeAuthAccessRpc,
   WsSubscribeBackgroundPolicyRpc,
+  WsThreadVisitsVisitRpc,
+  WsThreadVisitsMarkUnreadRpc,
+  WsSubscribeThreadVisitsRpc,
   WsSubscribeResourceTelemetryRpc,
   WsOrchestrationDispatchCommandRpc,
   WsOrchestrationGetWorkflowScriptRpc,

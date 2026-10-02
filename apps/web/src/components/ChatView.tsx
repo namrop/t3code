@@ -479,6 +479,7 @@ import {
   waitForStartedServerThread,
   shouldRefocusComposerOnWindowFocus,
 } from "./ChatView.logic";
+import { resolveOpenThreadVisitAt } from "./Sidebar.logic";
 import type { ThreadSyncPhase } from "../threadSync";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { useComposerHandleContext } from "../composerHandleContext";
@@ -2120,19 +2121,32 @@ export default function ChatView(props: ChatViewProps) {
   // stamped at the turn's completion time — not now/updatedAt — so it clears
   // exactly the completion the user is looking at: a wake or completion that
   // lands later still gets its signal (markThreadVisited never moves the
-  // timestamp backwards).
+  // timestamp backwards). Fork: a thread open while its turn is still working
+  // is stamped at the turn's request time, so a thread started and left gets
+  // its Done badge when the turn finishes (resolveOpenThreadVisitAt).
+  const latestTurnRequestedAt = serverThread?.latestTurn?.requestedAt;
+  const latestTurnCompletedAt = serverThread?.latestTurn?.completedAt;
+  const serverThreadCreatedAt = serverThread?.createdAt;
   useEffect(() => {
-    const completedAt = serverThread?.latestTurn?.completedAt;
-    if (!serverThread?.id || !completedAt) return;
+    if (!serverThread?.id || !serverThreadCreatedAt) return;
+    const visitedAt = resolveOpenThreadVisitAt({
+      latestTurn:
+        latestTurnRequestedAt === undefined
+          ? null
+          : { requestedAt: latestTurnRequestedAt, completedAt: latestTurnCompletedAt ?? null },
+      createdAt: serverThreadCreatedAt,
+    });
     markThreadVisited(
       scopedThreadKey(scopeThreadRef(serverThread.environmentId, serverThread.id)),
-      completedAt,
+      visitedAt,
     );
   }, [
     markThreadVisited,
     serverThread?.environmentId,
     serverThread?.id,
-    serverThread?.latestTurn?.completedAt,
+    latestTurnRequestedAt,
+    latestTurnCompletedAt,
+    serverThreadCreatedAt,
   ]);
   useEffect(() => {
     setMountedTerminalThreadKeys((currentThreadIds) => {

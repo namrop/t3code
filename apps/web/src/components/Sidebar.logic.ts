@@ -670,6 +670,20 @@ export function useThreadJumpHintVisibility(): {
   };
 }
 
+/**
+ * The time an open thread counts as viewed up to. A finished turn is stamped
+ * at its completion, so it clears exactly the completion on screen. A turn
+ * still working is stamped at its request time (or the thread's creation time
+ * when it has no turn), which is earlier than the coming completion: a thread
+ * started and left still gets its Done badge when that turn finishes.
+ */
+export function resolveOpenThreadVisitAt(thread: {
+  readonly latestTurn: { readonly requestedAt: string; readonly completedAt: string | null } | null;
+  readonly createdAt: string;
+}): string {
+  return thread.latestTurn?.completedAt ?? thread.latestTurn?.requestedAt ?? thread.createdAt;
+}
+
 export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
   if (!thread.latestTurn?.completedAt) return false;
   const completedAt = Date.parse(thread.latestTurn.completedAt);
