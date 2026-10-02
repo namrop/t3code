@@ -35,7 +35,12 @@ const run = Effect.fn("test.run")(function* (
 ) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const child = yield* spawner.spawn(
-    ChildProcess.make(command, args, { cwd: options.cwd, env: options.env ?? {} }),
+    // `env` replaces the whole environment; the default keeps only PATH, so
+    // tar can still find gzip on hosts with no FHS /usr/bin (NixOS).
+    ChildProcess.make(command, args, {
+      cwd: options.cwd,
+      env: options.env ?? { PATH: process.env.PATH ?? "" },
+    }),
   );
   const [stdout, stderr, exitCode] = yield* Effect.all(
     [collect(child.stdout), collect(child.stderr), child.exitCode.pipe(Effect.map(Number))],
