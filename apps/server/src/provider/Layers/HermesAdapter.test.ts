@@ -325,11 +325,13 @@ it.layer(hermesAdapterTestLayer)("makeHermesAdapter against the mock ACP agent",
           NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "hermes-adapter-probe-exit-log-")),
         );
         const exitLogPath = NodePath.join(tempDir, "exit.log");
+        const readyPath = NodePath.join(tempDir, "ready");
 
         const wrapperPath = yield* Effect.promise(() =>
           makeMockHermesWrapper({
             T3_ACP_HANG_INITIALIZE: "1",
             T3_ACP_EXIT_LOG_PATH: exitLogPath,
+            T3_ACP_READY_PATH: readyPath,
           }),
         );
         const adapter = yield* makeTestAdapter(wrapperPath, { authMethodProbeTimeoutMs: 200 });
@@ -347,17 +349,21 @@ it.layer(hermesAdapterTestLayer)("makeHermesAdapter against the mock ACP agent",
           })
           .pipe(Effect.flip, Effect.forkChild);
 
-        // Give the mock agent's real child process time to actually spawn
-        // and register its own SIGTERM handler before firing the probe's
-        // internal 200ms timeoutOrElse — a real delay, since the virtual
-        // TestClock advances instantly regardless of real elapsed time.
-        yield* Effect.promise(
-          () =>
-            new Promise((resolve) => {
-              // @effect-diagnostics-next-line globalTimers:off -- real wall-clock delay, not a virtual-clock wait.
-              setTimeout(resolve, 500);
-            }),
-        );
+        // Wait until the mock agent's real child process has spawned and
+        // registered its own SIGTERM handler (it writes `readyPath` once it
+        // has) before firing the probe's internal 200ms timeoutOrElse. A fixed
+        // delay was not enough: loading the mock takes 0.5 s or more on a busy
+        // host, and a kill before the handler exists leaves no exit log. Polls
+        // with real delays, since the virtual TestClock advances instantly.
+        yield* Effect.promise(async () => {
+          for (let attempt = 0; attempt < 600; attempt += 1) {
+            const ready = await NodeFSP.readFile(readyPath, "utf8").catch(() => "");
+            if (ready.trim().length > 0) return;
+            // @effect-diagnostics-next-line globalTimers:off -- real wall-clock delay; this poll must not use Effect.sleep, which the virtual TestClock freezes.
+            await new Promise((resolve) => setTimeout(resolve, 25));
+          }
+          throw new Error(`Mock agent never became ready (${readyPath})`);
+        });
         yield* TestClock.adjust("1 second");
         const failure = yield* Fiber.join(resultFiber);
 

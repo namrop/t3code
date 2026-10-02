@@ -204,6 +204,14 @@ process.once("exit", (code) => {
   logExit(`exit:${code}`);
 });
 
+// Signal handlers are now in place. A test that kills this process and reads
+// the exit log waits for this file instead of guessing how long startup takes
+// (loading effect and effect-acp takes 0.5 s or more on a busy host).
+const readyPath = process.env.T3_ACP_READY_PATH;
+if (readyPath) {
+  NodeFS.writeFileSync(readyPath, "ready\n", "utf8");
+}
+
 function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
   if (antigravityProfile) {
     return [

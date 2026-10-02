@@ -198,7 +198,10 @@ async function cleanUpFixture() {
 
 afterEach(cleanUpFixture);
 
-describe("editable file highlighting", () => {
+// Each test starts a real worker pool and loads the highlighter: 11-14 s apiece
+// at a load average of 10 (2026-10-02, Sol), against the suite's 15 s default,
+// so a busy host timed them out. They get their own, roomier budget.
+describe("editable file highlighting", { timeout: 60_000 }, () => {
   it("cleans up an already terminated worker pool", async () => {
     (await nextResponse()).deliver();
     expect(pool.getStats().totalWorkers).toBe(1);

@@ -202,7 +202,10 @@ server.listen(0, "127.0.0.1", () => {
             const stop = yield* spawner.spawn(
               ChildProcess.make("/bin/sh", ["-s"], {
                 cwd: fixture,
-                env: { T3_TEST_STATE_DIR: fixture },
+                // `env` replaces the whole environment, so pass PATH through:
+                // without it /bin/sh falls back to FHS paths, which hold no
+                // utilities on hosts such as NixOS.
+                env: { PATH: process.env.PATH ?? "", T3_TEST_STATE_DIR: fixture },
                 stdin: Stream.make(new TextEncoder().encode(isolatedScript)),
               }),
             );
