@@ -1318,6 +1318,26 @@ export function makeHermesAdapter(
             threadId: input.threadId,
             payload: { providerThreadId: started.sessionId },
           });
+          if (resumeSessionId !== undefined && started.sessionId !== resumeSessionId) {
+            // The runtime fell back to session/new because Hermes no longer
+            // has the saved session (onResumeNotFound in HermesAcpSupport).
+            // Say so: the earlier turns shown in the thread are not in the
+            // new session's context.
+            yield* offerRuntimeEvent({
+              type: "runtime.warning",
+              ...(yield* makeEventStamp()),
+              provider: PROVIDER,
+              threadId: input.threadId,
+              payload: {
+                message: "Hermes no longer had this thread's session; started a new one.",
+                detail: {
+                  previousSessionId: resumeSessionId,
+                  sessionId: started.sessionId,
+                  note: "Earlier turns in this thread are not in the new session's context.",
+                },
+              },
+            });
+          }
 
           return session;
         }).pipe(Effect.scoped),

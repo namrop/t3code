@@ -309,6 +309,13 @@ const makeHermesAcpRuntimeForAuthMethodId = (
         // Hermes's real response, bounded by cancelTimeout.
         cancelBehavior: "wait-for-prompt",
         cancelTimeout: `${HERMES_CANCEL_TIMEOUT_MS} millis`,
+        // A thread's saved Hermes session can be gone: `hermes acp` deletes
+        // sessions with no messages when it exits (before Hermes e7458c7de1
+        // that included one whose first prompt was still waiting on
+        // speech-to-text). Hermes answers that load with -32002; open a new
+        // session instead of leaving the thread unable to start
+        // (2026-10-03, thread 7922b2fc). HermesAdapter reports the switch.
+        onResumeNotFound: "new-session",
       }).pipe(
         Layer.provide(
           Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, input.childProcessSpawner),

@@ -61,6 +61,10 @@ const failPrompt = process.env.T3_ACP_FAIL_PROMPT === "1";
 // send effect's `_tag: "Cause"` envelope instead, which no real agent sends.
 const failCancelledPromptWithJsonRpcError =
   process.env.T3_ACP_FAIL_CANCELLED_PROMPT_WITH_JSONRPC_ERROR === "1";
+// Answer session/load with the spec's plain "Resource not found" (-32002)
+// error object, as Hermes does (since e7458c7de1) for a session it no longer
+// has. Written by hand for the same reason as the cancelled-prompt error.
+const loadSessionNotFound = process.env.T3_ACP_LOAD_SESSION_NOT_FOUND === "1";
 const emitElicitation = process.env.T3_ACP_EMIT_ELICITATION === "1";
 const failSetSessionModel = process.env.T3_ACP_FAIL_SET_SESSION_MODEL === "1";
 const hangInitialize = process.env.T3_ACP_HANG_INITIALIZE === "1";
@@ -162,23 +166,25 @@ function writeJsonRpcNotification(method: string, params: unknown): void {
   process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
 }
 
-// JSON-RPC ids of incoming session/prompt requests, in arrival order, so a
-// prompt handler can answer its own request by hand (the handler never sees
-// the wire id). Fed from the raw stdin chunks; a line may span chunks.
+// JSON-RPC ids of incoming session/prompt and session/load requests, in
+// arrival order, so a handler can answer its own request by hand (the
+// handler never sees the wire id). Fed from the raw stdin chunks; a line may
+// span chunks.
 const promptRequestIds: Array<string | number> = [];
+const loadRequestIds: Array<string | number> = [];
 let partialIncomingLine = "";
 function recordPromptRequestIds(chunk: string): void {
   const lines = (partialIncomingLine + chunk).split("\n");
   partialIncomingLine = lines.pop() ?? "";
   for (const line of lines) {
-    if (!line.includes('"session/prompt"')) continue;
+    if (!line.includes('"session/prompt"') && !line.includes('"session/load"')) continue;
     try {
       const message = JSON.parse(line) as { method?: unknown; id?: unknown };
-      if (
-        message.method === "session/prompt" &&
-        (typeof message.id === "string" || typeof message.id === "number")
-      ) {
+      if (typeof message.id !== "string" && typeof message.id !== "number") continue;
+      if (message.method === "session/prompt") {
         promptRequestIds.push(message.id);
+      } else if (message.method === "session/load") {
+        loadRequestIds.push(message.id);
       }
     } catch {
       // Not a complete JSON-RPC message; nothing to record.
@@ -625,6 +631,18 @@ const program = Effect.gen(function* () {
       const requestedSessionId = String(request.sessionId ?? sessionId);
       if (failLoadSession) {
         return yield* AcpError.AcpRequestError.internalError("Mock load session failure");
+      }
+      if (loadSessionNotFound) {
+        const loadRequestId = loadRequestIds.shift();
+        yield* Effect.sync(() =>
+          writeJsonRpcError(loadRequestId, {
+            code: -32002,
+            message: `Session ${requestedSessionId} not found`,
+            data: { sessionId: requestedSessionId },
+          }),
+        );
+        // That was this request's only reply; effect-acp must not add one.
+        return yield* Effect.never;
       }
       if (hangLoadSessionAfterReplay || delayLoadSessionAfterReplay) {
         emitLoadReplayNotifications(requestedSessionId);
@@ -1692,7 +1710,7 @@ const program = Effect.gen(function* () {
 }).pipe(
   Effect.provide(
     EffectAcpAgent.layerStdio(
-      requestLogPath || failCancelledPromptWithJsonRpcError
+      requestLogPath || failCancelledPromptWithJsonRpcError || loadSessionNotFound
         ? {
             logIncoming: true,
             logger: (event) => {

@@ -85,6 +85,13 @@ export interface AcpSessionRuntimeOptions {
   readonly cwd: string;
   readonly resumeSessionId?: string;
   readonly resumeMethod?: "load" | "resume";
+  /**
+   * When `session/load` answers the spec's "Resource not found" (-32002) for
+   * `resumeSessionId`: `"fail"` (default) fails the start; `"new-session"`
+   * opens a fresh session with `session/new` on the same connection, and the
+   * started state carries the new session id.
+   */
+  readonly onResumeNotFound?: "fail" | "new-session";
   readonly sessionLoadTimeout?: Duration.Input;
   readonly sessionLoadReplayIdleGap?: Duration.Input;
   /** Native cancellation waits for the prompt response and the getEvents consumer to drain. */
@@ -753,6 +760,21 @@ export const make = (
         acp.agent.authenticate(authenticatePayload),
       );
 
+      const createSession = Effect.suspend(() => {
+        const createPayload = {
+          cwd: options.cwd,
+          mcpServers: options.mcpServers ?? [],
+          ...(options.additionalDirectories && options.additionalDirectories.length > 0
+            ? { additionalDirectories: options.additionalDirectories }
+            : {}),
+        } satisfies EffectAcpSchema.NewSessionRequest;
+        return runLoggedRequest(
+          "session/new",
+          createPayload,
+          acp.agent.createSession(createPayload),
+        );
+      });
+
       let sessionId: string;
       let sessionSetupResult:
         | EffectAcpSchema.LoadSessionResponse
@@ -816,8 +838,7 @@ export const make = (
           }),
         );
 
-        sessionId = options.resumeSessionId;
-        sessionSetupResult = yield* Effect.gen(function* () {
+        const loadOutcome = yield* Effect.gen(function* () {
           yield* logRequest({
             method: "session/load",
             payload: loadPayload,
@@ -863,20 +884,29 @@ export const make = (
           );
 
           return loaded;
-        }).pipe(Effect.ensuring(Ref.set(sessionLoadGateRef, Option.none())));
-      } else {
-        const createPayload = {
-          cwd: options.cwd,
-          mcpServers: options.mcpServers ?? [],
-          ...(options.additionalDirectories && options.additionalDirectories.length > 0
-            ? { additionalDirectories: options.additionalDirectories }
-            : {}),
-        } satisfies EffectAcpSchema.NewSessionRequest;
-        const created = yield* runLoggedRequest(
-          "session/new",
-          createPayload,
-          acp.agent.createSession(createPayload),
+        }).pipe(
+          Effect.ensuring(Ref.set(sessionLoadGateRef, Option.none())),
+          Effect.asSome,
+          Effect.catchIf(
+            (error) =>
+              options.onResumeNotFound === "new-session" && isAcpResourceNotFoundError(error),
+            () => Effect.succeedNone,
+          ),
         );
+
+        if (Option.isSome(loadOutcome)) {
+          sessionId = options.resumeSessionId;
+          sessionSetupResult = loadOutcome.value;
+        } else {
+          // The agent no longer has the session (Hermes deletes a session it
+          // thinks was never used when its process exits). A fresh one on
+          // this connection beats a thread that cannot start at all.
+          const created = yield* createSession;
+          sessionId = created.sessionId;
+          sessionSetupResult = created;
+        }
+      } else {
+        const created = yield* createSession;
         sessionId = created.sessionId;
         sessionSetupResult = created;
       }
@@ -1163,6 +1193,11 @@ function configOptionCurrentValueMatches(
     return false;
   }
   return currentValue.trim() === String(value).trim();
+}
+
+/** The agent's spec "Resource not found" (-32002) reply, e.g. Hermes loading a session it no longer has. */
+function isAcpResourceNotFoundError(error: EffectAcpErrors.AcpError): boolean {
+  return error._tag === "AcpRequestError" && error.code === -32002;
 }
 
 function isStartupMetadataUpdate(notification: EffectAcpSchema.SessionNotification): boolean {

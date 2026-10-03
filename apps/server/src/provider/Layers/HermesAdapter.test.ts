@@ -284,6 +284,126 @@ it.layer(hermesAdapterTestLayer)("makeHermesAdapter against the mock ACP agent",
     }),
   );
 
+  // 2026-10-03, thread 7922b2fc: `hermes acp` deleted the thread's session on
+  // exit, and the thread could not start again. Hermes now answers that load
+  // with -32002; the thread gets a fresh session and a warning instead.
+  it.effect("starts a new session when Hermes no longer has the saved one", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("hermes-resume-not-found");
+      const tempDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "hermes-resume-not-found-")),
+      );
+      const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockHermesWrapper({
+          T3_ACP_LOAD_SESSION_NOT_FOUND: "1",
+          T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+        }),
+      );
+      const adapter = yield* makeTestAdapter(wrapperPath);
+
+      const runtimeEvents: ProviderRuntimeEvent[] = [];
+      const turnCompleted = yield* Deferred.make<void>();
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }).pipe(
+          Effect.andThen(
+            event.type === "turn.completed"
+              ? Deferred.succeed(turnCompleted, undefined)
+              : Effect.void,
+          ),
+        ),
+      ).pipe(Effect.forkChild);
+
+      const session = yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("hermes"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        resumeCursor: { schemaVersion: 1, sessionId: "deleted-session" },
+      });
+
+      assert.deepStrictEqual(session.resumeCursor, {
+        schemaVersion: 1,
+        sessionId: "mock-session-1",
+      });
+
+      yield* adapter.sendTurn({ threadId, input: "are you there", attachments: [] });
+      yield* Deferred.await(turnCompleted);
+      yield* Fiber.interrupt(runtimeEventsFiber);
+
+      const warning = runtimeEvents.find((event) => event.type === "runtime.warning");
+      assert.isDefined(warning);
+      if (warning?.type === "runtime.warning") {
+        assert.include(warning.payload.message, "started a new one");
+        assert.deepInclude(warning.payload.detail as Record<string, unknown>, {
+          previousSessionId: "deleted-session",
+          sessionId: "mock-session-1",
+        });
+      }
+      const completed = runtimeEvents.find((event) => event.type === "turn.completed");
+      assert.equal(
+        completed?.type === "turn.completed" ? completed.payload.state : undefined,
+        "completed",
+      );
+
+      const methods = (yield* Effect.promise(() => readJsonLines(requestLogPath)))
+        .map((request) => request.method)
+        .filter((method) => typeof method === "string" && method.startsWith("session/"));
+      assert.deepStrictEqual(methods.slice(0, 2), ["session/load", "session/new"]);
+      const prompt = (yield* Effect.promise(() => readJsonLines(requestLogPath))).find(
+        (request) => request.method === "session/prompt",
+      );
+      assert.equal(
+        (prompt?.params as { sessionId?: unknown } | undefined)?.sessionId,
+        "mock-session-1",
+      );
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("keeps a saved session that loads, without a warning", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("hermes-resume-found");
+      const wrapperPath = yield* Effect.promise(() => makeMockHermesWrapper());
+      const adapter = yield* makeTestAdapter(wrapperPath);
+
+      const runtimeEvents: ProviderRuntimeEvent[] = [];
+      const threadStarted = yield* Deferred.make<void>();
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }).pipe(
+          Effect.andThen(
+            event.type === "thread.started"
+              ? Deferred.succeed(threadStarted, undefined)
+              : Effect.void,
+          ),
+        ),
+      ).pipe(Effect.forkChild);
+
+      const session = yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("hermes"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        resumeCursor: { schemaVersion: 1, sessionId: "saved-session" },
+      });
+      yield* Deferred.await(threadStarted);
+      yield* Fiber.interrupt(runtimeEventsFiber);
+
+      assert.deepStrictEqual(session.resumeCursor, {
+        schemaVersion: 1,
+        sessionId: "saved-session",
+      });
+      assert.isUndefined(runtimeEvents.find((event) => event.type === "runtime.warning"));
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect.skipIf(windowsHost)("closes the ACP child process when a session stops", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("hermes-stop-session-close");
