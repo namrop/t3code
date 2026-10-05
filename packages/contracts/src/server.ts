@@ -270,6 +270,7 @@ export const ServerProvider = Schema.Struct({
   // Human-readable reason populated when `availability === "unavailable"`.
   // Surfaces in the UI alongside the missing-driver affordance.
   unavailableReason: Schema.optional(TrimmedNonEmptyString),
+  supportsAudioPrompts: Schema.optionalKey(Schema.Boolean),
   models: Schema.Array(ServerProviderModel),
   slashCommands: Schema.Array(ServerProviderSlashCommand).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
@@ -613,6 +614,7 @@ export const ServerDirectEndpoint = Schema.Struct({
 export type ServerDirectEndpoint = typeof ServerDirectEndpoint.Type;
 
 export const ServerConfig = Schema.Struct({
+  replySpeech: Schema.optionalKey(Schema.Boolean),
   environment: ExecutionEnvironmentDescriptor,
   auth: ServerAuthDescriptor,
   cwd: TrimmedNonEmptyString,

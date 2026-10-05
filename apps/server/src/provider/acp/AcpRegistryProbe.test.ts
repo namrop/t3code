@@ -30,6 +30,23 @@ const mockAgentPath = NodePath.join(__dirname, "../../../scripts/acp-mock-agent.
 const decodeSettings = Schema.decodeSync(AcpRegistrySettings);
 
 describe("ACP Registry probe", () => {
+  it("exposes negotiated audio prompts independently of agent identity", () => {
+    const started = {
+      sessionId: "audio-session",
+      initializeResult: {
+        protocolVersion: 1,
+        agentCapabilities: { promptCapabilities: { audio: true } },
+      },
+      sessionSetupResult: { sessionId: "audio-session" },
+      modelConfigId: undefined,
+    } satisfies AcpSessionRuntimeStartResult;
+    expect(acpRegistryProbeResult(instanceId, started)).toMatchObject({
+      supportsAudioPrompts: true,
+    });
+    expect(
+      acpRegistryProbeResult(instanceId, { ...started, initializeResult: { protocolVersion: 1 } }),
+    ).toMatchObject({ supportsAudioPrompts: false });
+  });
   it("returns advertised auth methods and de-duplicated models", () => {
     const result = acpRegistryProbeResult(instanceId, {
       sessionId: "probe-session",
@@ -73,6 +90,7 @@ describe("ACP Registry probe", () => {
     expect(result).toEqual({
       instanceId,
       ready: true,
+      supportsAudioPrompts: false,
       icon: null,
       authMethods: [
         { id: "chatgpt", name: "ChatGPT", description: null, type: "agent" },

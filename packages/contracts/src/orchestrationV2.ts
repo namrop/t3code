@@ -317,6 +317,7 @@ export const OrchestrationV2IdentityCapabilities = Schema.Struct({
 export type OrchestrationV2IdentityCapabilities = typeof OrchestrationV2IdentityCapabilities.Type;
 
 export const OrchestrationV2ProviderCapabilities = Schema.Struct({
+  supportsAudioPrompts: Schema.optionalKey(Schema.Boolean),
   sessions: OrchestrationV2SessionCapabilities,
   threads: OrchestrationV2ThreadCapabilities,
   turns: OrchestrationV2TurnCapabilities,

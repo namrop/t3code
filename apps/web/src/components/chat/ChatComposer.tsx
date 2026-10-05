@@ -253,6 +253,17 @@ import {
 import { useEnvironmentQuery } from "~/state/query";
 import { useDebouncedValue } from "~/state/queries";
 import { ProviderModelPicker } from "./ProviderModelPicker";
+import { useComposerVoiceNote } from "./useComposerVoiceNote";
+import {
+  providerTakesVoiceNotes,
+  VOICE_NOTE_HANDOFF_TIMEOUT_MS,
+  voiceNoteHandoffStep,
+} from "./composerVoiceNote";
+import {
+  ComposerVoiceNoteBar,
+  ComposerVoiceNoteButton,
+  VOICE_NOTE_FLIP_BACK_CLASS,
+} from "./ComposerVoiceNoteBar";
 import { resolveModelPickerSelectedModel } from "./ModelPickerContent";
 import {
   type ComposerCommandItem,
@@ -4133,12 +4144,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     showPlanFollowUpPrompt,
   ]);
 
+  const voiceNoteRecordingRef = useRef(false);
+  const voiceNoteSendRef = useRef<() => void>(() => {});
   const submitComposer = useCallback(
     (
       event?: { preventDefault: () => void },
       dispatchMode?: ComposerDispatchMode,
       submissionIntent?: ComposerSubmissionIntent,
     ) => {
+      if (voiceNoteRecordingRef.current) {
+        event?.preventDefault();
+        voiceNoteSendRef.current();
+        return;
+      }
       if (noProviderAvailable || isSendDisabled) {
         event?.preventDefault();
         return;
@@ -5930,6 +5948,101 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   };
 
   // ------------------------------------------------------------------
+  // Voice notes: one tap records, one tap sends
+  // ------------------------------------------------------------------
+  // The recording joins the draft like a picked file; once the draft holds
+  // it, the composer sends, with any typed text alongside.
+  const [pendingVoiceNoteFile, setPendingVoiceNoteFile] = useState<File | null>(null);
+  const voiceNote = useComposerVoiceNote({
+    onRecorded: async (file) => {
+      const inserted = await addComposerAttachments([file]);
+      if (inserted) setPendingVoiceNoteFile(file);
+      return inserted;
+    },
+  });
+  const {
+    cancel: voiceNoteCancel,
+    complete: voiceNoteComplete,
+    send: voiceNoteSend,
+    state: voiceNoteState,
+  } = voiceNote;
+  const voiceNoteRecording =
+    voiceNoteState.phase === "preparing" || voiceNoteState.phase === "recording";
+  useLayoutEffect(() => {
+    voiceNoteRecordingRef.current = voiceNoteRecording;
+    voiceNoteSendRef.current = voiceNoteSend;
+  }, [voiceNoteRecording, voiceNoteSend]);
+  const voiceNoteActive = voiceNoteState.phase !== "idle";
+  const showVoiceNoteAction =
+    voiceNote.available &&
+    showComposerAttachAction &&
+    !activePendingProgress &&
+    providerTakesVoiceNotes(selectedProviderStatus);
+  const voiceNoteStartDisabled =
+    isConnecting ||
+    noProviderAvailable ||
+    environmentUnavailable !== null ||
+    projectSelectionRequired;
+  // The regular toolbar flips back in once a voice note ends.
+  const [voiceNoteWasActive, setVoiceNoteWasActive] = useState(false);
+  const [voiceNoteFlipBack, setVoiceNoteFlipBack] = useState(false);
+  if (voiceNoteActive !== voiceNoteWasActive) {
+    setVoiceNoteWasActive(voiceNoteActive);
+    setVoiceNoteFlipBack(!voiceNoteActive);
+  }
+  // Sending waits for the recording's upload: the composer refuses to send
+  // while an attachment is still uploading, so an immediate send was dropped.
+  useEffect(() => {
+    if (!pendingVoiceNoteFile) return;
+    const landedFile = composerFiles.find(
+      (attachment) =>
+        attachment.file === pendingVoiceNoteFile ||
+        (attachment.name === pendingVoiceNoteFile.name &&
+          attachment.sizeBytes === pendingVoiceNoteFile.size),
+    );
+    const upload = landedFile ? uploadsByImageId[landedFile.id] : undefined;
+    const step = voiceNoteHandoffStep({
+      landed: landedFile !== undefined,
+      uploadsToServer: supportsAttachmentUploads,
+      uploadStatus: upload && upload.environmentId === environmentId ? upload.status : null,
+      sendBlocked: isSendDisabled || noProviderAvailable,
+    });
+    if (step === "wait") return;
+    setPendingVoiceNoteFile(null);
+    if (step === "send") submitComposer();
+    voiceNoteComplete();
+  }, [
+    composerFiles,
+    environmentId,
+    isSendDisabled,
+    noProviderAvailable,
+    pendingVoiceNoteFile,
+    submitComposer,
+    supportsAttachmentUploads,
+    uploadsByImageId,
+    voiceNoteComplete,
+  ]);
+  // An upload that never settles must not leave the bar on "Sending"; the
+  // draft keeps the recording and the regular send button takes over.
+  useEffect(() => {
+    if (!pendingVoiceNoteFile) return;
+    const timer = setTimeout(() => {
+      setPendingVoiceNoteFile(null);
+      voiceNoteComplete();
+    }, VOICE_NOTE_HANDOFF_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [pendingVoiceNoteFile, voiceNoteComplete]);
+  // A recording belongs to the thread it started in; the composer persists
+  // across threads, so switching threads discards it.
+  useEffect(
+    () => () => {
+      voiceNoteCancel();
+      setPendingVoiceNoteFile(null);
+    },
+    [attachmentTargetKey, voiceNoteCancel],
+  );
+
+  // ------------------------------------------------------------------
   // Callbacks: paste / drag
   // ------------------------------------------------------------------
   const foldPastedText = (
@@ -6799,7 +6912,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               composerProviderState.composerSurfaceClassName,
             )}
           >
-            {showCollapsedMobilePromptRow ? (
+            {showCollapsedMobilePromptRow && voiceNoteActive ? (
+              <div className="px-3 py-1.5">
+                <ComposerVoiceNoteBar
+                  state={voiceNoteState}
+                  onCancel={voiceNoteCancel}
+                  onSend={voiceNoteSend}
+                  onDismissError={voiceNote.dismissError}
+                  onRetry={voiceNote.start}
+                />
+              </div>
+            ) : showCollapsedMobilePromptRow ? (
               <div className="flex items-center justify-between gap-2 px-3 py-2">
                 <button
                   type="button"
@@ -6826,6 +6949,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         : "Ask anything...")}
                 </button>
                 {collapsedComposerImagePreviews}
+                {showVoiceNoteAction ? (
+                  <ComposerVoiceNoteButton
+                    disabled={voiceNoteStartDisabled}
+                    onStart={voiceNote.start}
+                  />
+                ) : null}
                 <button
                   type="button"
                   data-chat-composer-transition-actions="true"
@@ -7430,7 +7559,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             />
 
             {/* Bottom toolbar */}
-            {isComposerCollapsedMobile || isComposerApprovalState ? null : (
+            {voiceNoteActive && !isComposerCollapsedMobile ? (
+              <div className="px-3 pb-3 sm:px-4 sm:pb-4">
+                <ComposerVoiceNoteBar
+                  state={voiceNoteState}
+                  onCancel={voiceNoteCancel}
+                  onSend={voiceNoteSend}
+                  onDismissError={voiceNote.dismissError}
+                  onRetry={voiceNote.start}
+                />
+              </div>
+            ) : isComposerCollapsedMobile || isComposerApprovalState ? null : (
               <div
                 data-chat-composer-footer="true"
                 data-chat-composer-footer-compact={isComposerFooterCompact ? "true" : "false"}
@@ -7443,7 +7582,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     "absolute right-px z-10 h-12 w-auto gap-0 py-0 sm:gap-0 sm:py-0",
                   isComposerResting &&
                     (showInlineRestingControls ? "bottom-[calc(2rem+1px)]" : "bottom-px"),
+                  voiceNoteFlipBack && VOICE_NOTE_FLIP_BACK_CLASS,
                 )}
+                onAnimationEnd={(event) => {
+                  if (event.target === event.currentTarget) setVoiceNoteFlipBack(false);
+                }}
               >
                 <div
                   ref={expandedControlsLayout.attachControls}
@@ -7502,6 +7645,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         <TooltipPopup>Attach files</TooltipPopup>
                       </Tooltip>
                     </>
+                  ) : null}
+                  {showVoiceNoteAction ? (
+                    <ComposerVoiceNoteButton
+                      disabled={voiceNoteStartDisabled}
+                      onStart={voiceNote.start}
+                    />
                   ) : null}
                   <ComposerFooterPrimaryActions
                     compact={isComposerResting || isComposerPrimaryActionsCompact}

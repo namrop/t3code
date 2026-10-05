@@ -491,6 +491,7 @@ const program = Effect.gen(function* () {
         _meta: { modelState: modelState() },
         capabilities: {
           session: {
+            ...(process.env.T3_ACP_AUDIO === "1" ? { prompt: { audio: {} } } : {}),
             ...(supportsSessionLifecycle ? { fork: {}, additionalDirectories: {} } : {}),
             ...(supportsV2Management ? { delete: {} } : {}),
             ...(supportsAcpMcp ? { mcp: { acp: {} } } : {}),
@@ -880,6 +881,21 @@ const program = Effect.gen(function* () {
         return yield* Effect.sync(() => process.exit(23));
       }
 
+      if (process.env.T3_ACP_VOICE_TRANSCRIPT === "1") {
+        writeJsonRpcNotification("session/update", {
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "voice-transcript",
+            title: "Voice note transcript",
+            kind: "other",
+            status: "completed",
+            rawOutput:
+              "The complete transcript has no eighty-four character preview limit. ".repeat(5),
+            _meta: { hermes: { toolName: "voice_note_transcript" } },
+          },
+        });
+      }
       if (clientFsProbePath !== undefined && clientFsProbeLogPath !== undefined) {
         const probes = [
           [

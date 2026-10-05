@@ -123,6 +123,13 @@ const EnvServerConfig = Config.all({
   otlpProtocol: Config.schema(OtlpProtocol, "T3CODE_OTLP_PROTOCOL").pipe(
     Config.withDefault("http/json"),
   ),
+  speechUrl: Config.URL("T3CODE_SPEECH_URL").pipe(Config.option, Config.map(Option.getOrUndefined)),
+  speechModel: Config.String("T3CODE_SPEECH_MODEL").pipe(
+    Config.withDefault(ServerConfig.DEFAULT_SPEECH_MODEL),
+  ),
+  speechVoice: Config.String("T3CODE_SPEECH_VOICE").pipe(
+    Config.withDefault(ServerConfig.DEFAULT_SPEECH_VOICE),
+  ),
   mode: Config.schema(ServerConfig.RuntimeMode, "T3CODE_MODE").pipe(
     Config.option,
     Config.map(Option.getOrUndefined),
@@ -446,6 +453,9 @@ export const resolveServerConfig = (
       otlpTracesUrl: traces?.url,
       otlpMetricsUrl: metrics?.url,
       otlpLogsUrl: logs?.url,
+      speechUrl: env.speechUrl,
+      speechModel: env.speechModel,
+      speechVoice: env.speechVoice,
       otlpTracesExport: traces?.export ?? signalExport,
       otlpMetricsExport: metrics?.export ?? signalExport,
       otlpLogsExport: logs?.export ?? signalExport,

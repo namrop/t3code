@@ -1692,6 +1692,7 @@ const makeWsRpcLayer = (
               remoteOpenTargets.resolveTargets(),
             ),
             directEndpoints: yield* resolveAvailableEditorsForConfig(directEndpoints.resolve()),
+            replySpeech: config.speechUrl !== undefined,
             observability: {
               logsDirectoryPath: config.logsDir,
               localTracingEnabled: true,

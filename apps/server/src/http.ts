@@ -27,6 +27,7 @@ import {
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import { OtlpTracer, OtlpSerialization } from "effect/observability";
 
+import * as ReplySpeech from "./replySpeech.ts";
 import * as ServerConfig from "./config.ts";
 import { ASSET_ROUTE_PREFIX, resolveAsset } from "./assets/AssetAccess.ts";
 import { githubMediaResponse } from "./assets/GitHubMediaFetch.ts";
@@ -368,6 +369,39 @@ export const otlpTracesProxyRouteLayer = HttpRouter.add(
       EnvironmentScopeRequiredError: HttpServerRespondable.toResponse,
     }),
     Effect.withTracerEnabled(false),
+  ),
+);
+
+const ReplySpeechInput = Schema.Struct({ text: Schema.String });
+export const replySpeechRouteLayer = HttpRouter.add(
+  "POST",
+  "/api/reply-speech",
+  Effect.gen(function* () {
+    yield* authenticateRawRouteWithScope(AuthOrchestrationReadScope);
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const body = yield* request.json.pipe(Effect.orElseSucceed(() => null));
+    const decoded = Schema.decodeUnknownOption(ReplySpeechInput)(body);
+    if (Option.isNone(decoded))
+      return HttpServerResponse.text("A reply text value is required.", { status: 400 });
+    const audio = yield* Effect.gen(function* () {
+      const speech = yield* ReplySpeech.ReplySpeech;
+      return yield* speech.synthesize(decoded.value.text);
+    }).pipe(Effect.provide(ReplySpeech.layer));
+    return HttpServerResponse.stream(Stream.fromIterable([audio]), {
+      headers: {
+        "Cache-Control": "private, no-store",
+        "Content-Type": "audio/mpeg",
+        "X-Content-Type-Options": "nosniff",
+      },
+    });
+  }).pipe(
+    Effect.catchTags({
+      ReplySpeechError: (error) =>
+        Effect.succeed(HttpServerResponse.text(error.detail, { status: error.status })),
+      EnvironmentAuthInvalidError: HttpServerRespondable.toResponse,
+      EnvironmentInternalError: HttpServerRespondable.toResponse,
+      EnvironmentScopeRequiredError: HttpServerRespondable.toResponse,
+    }),
   ),
 );
 

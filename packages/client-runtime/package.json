@@ -179,6 +179,10 @@
       "types": "./src/state/deviceHubAccess.ts",
       "default": "./src/state/deviceHubAccess.ts"
     },
+    "./state/reply-speech": {
+      "types": "./src/state/replySpeech.ts",
+      "default": "./src/state/replySpeech.ts"
+    },
     "./state/preview": {
       "types": "./src/state/preview.ts",
       "default": "./src/state/preview.ts"

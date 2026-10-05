@@ -57,6 +57,11 @@ import type * as EffectAcpProtocol from "effect-acp/protocol";
 import type * as EffectAcpSchema from "effect-acp/compat";
 
 import { formatReadToolLabel, formatSearchToolLabel } from "@t3tools/shared/toolActivity";
+import {
+  ACP_MAX_AUDIO_ATTACHMENT_BYTES,
+  isAudioAttachment,
+  audioAttachmentMimeType,
+} from "@t3tools/contracts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import * as ServerConfig from "../../config.ts";
 import {
@@ -656,6 +661,7 @@ function negotiatedCapabilities(
   const canFork = session?.fork != null;
   return {
     ...base,
+    supportsAudioPrompts: agent.promptCapabilities?.audio === true,
     sessions: {
       ...base.sessions,
       supportsModelSwitchInSession: hasModelConfig,
@@ -3482,7 +3488,12 @@ export function makeAcpAdapterV2(
                   turnItem = {
                     ...base,
                     type: "dynamic_tool",
-                    toolName: toolCall.title ?? toolCall.kind ?? null,
+                    // Transcript echo has a stable extension name even for local ACP commands.
+                    toolName:
+                      unknownRecord(unknownRecord(toolCall.data.meta)?.hermes)?.toolName ===
+                      "voice_note_transcript"
+                        ? "voice_note_transcript"
+                        : (toolCall.title ?? toolCall.kind ?? null),
                     input: rawInput ?? {},
                     ...(rawOutput === undefined ? {} : { output: rawOutput }),
                   };
@@ -6792,6 +6803,40 @@ export function makeAcpAdapterV2(
               data: Buffer.from(bytes).toString("base64"),
               mimeType: attachment.mimeType,
             });
+          }
+          if (capabilities.supportsAudioPrompts === true) {
+            for (const attachment of turnInput.message.attachments) {
+              if (
+                !isAudioAttachment(attachment) ||
+                attachment.sizeBytes > ACP_MAX_AUDIO_ATTACHMENT_BYTES
+              )
+                continue;
+              const path = resolveAttachmentPath({
+                attachmentsDir: serverConfig.attachmentsDir,
+                attachment,
+              });
+              if (path === null)
+                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                  driver,
+                  detail: `Invalid attachment id '${attachment.id}'`,
+                });
+              const bytes = yield* fileSystem.readFile(path).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapter.ProviderAdapterProtocolError({
+                      driver,
+                      detail: `Failed to read attachment '${attachment.id}'`,
+                      payload: cause,
+                    }),
+                ),
+              );
+              if (bytes.length <= ACP_MAX_AUDIO_ATTACHMENT_BYTES)
+                prompt.push({
+                  type: "audio",
+                  data: Buffer.from(bytes).toString("base64"),
+                  mimeType: audioAttachmentMimeType(attachment),
+                });
+            }
           }
           if (prompt.length === 0) {
             return yield* new ProviderAdapter.ProviderAdapterProtocolError({

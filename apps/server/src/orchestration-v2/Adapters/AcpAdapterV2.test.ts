@@ -707,6 +707,119 @@ describe("AcpAdapterV2", () => {
     );
   });
 
+  it.effect(
+    "sends audio blocks only when negotiated and within the limit, retaining attachment paths",
+    () =>
+      Effect.gen(function* () {
+        const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const serverConfig = yield* ServerConfig.ServerConfig;
+        const mockAgentPath = yield* path.fromFileUrl(
+          new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+        );
+        const threadId = ThreadId.make("thread-acp-audio");
+        const attachment = {
+          type: "file" as const,
+          id: "thread-acp-audio-00000000-0000-4000-8000-000000000000-wav",
+          name: "voice.wav",
+          mimeType: "application/octet-stream",
+          sizeBytes: 3,
+        };
+        yield* fileSystem.makeDirectory(serverConfig.attachmentsDir, { recursive: true });
+        yield* fileSystem.writeFile(
+          path.join(serverConfig.attachmentsDir, `${attachment.id}.wav`),
+          new Uint8Array([1, 2, 3]),
+        );
+        for (const [audioEnabled, sizeBytes, expectsAudio] of [
+          [false, 3, false],
+          [true, 3, true],
+          [true, 25 * 1024 * 1024 + 1, false],
+        ] as const) {
+          const instanceId = ProviderInstanceId.make(`audio-${audioEnabled}-${sizeBytes}`);
+          let sentPrompt: ReadonlyArray<EffectAcpSchema.ContentBlock> = [];
+          const adapter = makeAcpAdapterV2({
+            crypto: yield* Crypto.Crypto,
+            selfInvocation: yield* resolveSelfInvocation(),
+            instanceId,
+            fileSystem,
+            serverConfig,
+            idAllocator: yield* IdAllocator.IdAllocatorV2,
+            flavor: {
+              driver: ACP_TEST_DRIVER,
+              capabilities: AcpProviderCapabilitiesV2,
+              makeRuntime: makeMockRuntime({
+                childProcessSpawner,
+                mockAgentPath,
+                environment: {
+                  T3_ACP_AUDIO: audioEnabled ? "1" : "0",
+                  T3_ACP_VOICE_TRANSCRIPT: "1",
+                },
+                wrapRuntime: (runtime) => ({
+                  ...runtime,
+                  prompt: (request) => {
+                    sentPrompt = request.prompt;
+                    return runtime.prompt(request);
+                  },
+                }),
+              }),
+            },
+          });
+          const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
+            cwd: serverConfig.stateDir,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+          });
+          const modelSelection = { instanceId, model: "default" };
+          const runtime = yield* adapter.openSession({
+            threadId,
+            providerSessionId: ProviderSessionId.make(`audio-${audioEnabled}-${sizeBytes}`),
+            modelSelection,
+            runtimePolicy,
+          });
+          const providerThread = yield* runtime.ensureThread({
+            threadId,
+            modelSelection,
+            runtimePolicy,
+          });
+          const input = makeTurnInput({
+            threadId,
+            providerThread,
+            instanceId,
+            runtimePolicy,
+            now: yield* DateTime.now,
+          });
+          yield* runtime.startTurn({
+            ...input,
+            message: { ...input.message, attachments: [{ ...attachment, sizeBytes }] },
+          });
+          const events = yield* runtime.events.pipe(
+            Stream.takeUntil((event) => event.type === "turn.terminal"),
+            Stream.runCollect,
+          );
+          assert.isTrue(
+            events.some(
+              (event) =>
+                event.type === "turn_item.updated" &&
+                event.turnItem.type === "dynamic_tool" &&
+                event.turnItem.toolName === "voice_note_transcript" &&
+                typeof event.turnItem.output === "string" &&
+                event.turnItem.output.length > 84,
+            ),
+          );
+          const audio = sentPrompt.filter((part) => part.type === "audio");
+          assert.equal(audio.length, expectsAudio ? 1 : 0);
+          if (expectsAudio)
+            assert.deepEqual(audio[0], { type: "audio", data: "AQID", mimeType: "audio/wav" });
+          assert.isTrue(
+            sentPrompt.some(
+              (part) => part.type === "text" && part.text.includes(`${attachment.id}.wav`),
+            ),
+          );
+        }
+      }).pipe(Effect.provide(testLayer), Effect.scoped),
+  );
+
   it.effect("starts the MCP bridge directly from the self-contained runtime", () =>
     Effect.gen(function* () {
       const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
