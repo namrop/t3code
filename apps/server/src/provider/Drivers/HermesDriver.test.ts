@@ -76,7 +76,10 @@ describe("HermesDriver", () => {
                   method: "initialize",
                   result: {
                     protocolVersion: 1,
-                    agentCapabilities: { loadSession: true },
+                    agentCapabilities: {
+                      loadSession: true,
+                      promptCapabilities: { image: true, audio: true },
+                    },
                     authMethods: [],
                   },
                 },
@@ -129,6 +132,7 @@ describe("HermesDriver", () => {
           instanceId: "hermes",
           status: "ready",
           displayName: "Hermes fixture",
+          supportsAudioPrompts: true,
         });
         expect(snapshot.models.map((m) => m.slug)).toContain("anthropic:fixture");
         expect(snapshot.models).toContainEqual(

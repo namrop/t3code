@@ -142,6 +142,8 @@ export const HermesDriver: ProviderDriver<HermesSettings, HermesDriverEnv> = {
             auth: { status: "authenticated" },
             checkedAt: DateTime.formatIso(DateTime.makeUnsafe(now)),
             message: undefined,
+            supportsAudioPrompts:
+              started.initializeResult.agentCapabilities?.promptCapabilities?.audio === true,
             models: providerModelsFromSettings(
               models.length ? models : FALLBACK_MODELS,
               settings.customModels,
