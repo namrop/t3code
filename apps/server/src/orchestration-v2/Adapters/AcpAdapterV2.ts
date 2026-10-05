@@ -323,6 +323,11 @@ export interface AcpAdapterV2Flavor {
    * ACKs in the running state until stream end).
    */
   readonly normalizeToolCall?: (toolCall: AcpToolCallState) => AcpToolCallState;
+  /** Provider-owned tool identity after generic ACP classification. */
+  readonly projectToolCall?: (
+    toolCall: AcpToolCallState,
+    item: OrchestrationV2TurnItem,
+  ) => OrchestrationV2TurnItem;
   /**
    * Optional plan-file sniffing (#8358): providers that write their proposed
    * plan to a file mid-turn (Grok plan.md) return its markdown from a tool
@@ -469,6 +474,8 @@ export interface AcpAdapterV2SubagentUpdate {
     | "interrupted"
     | "cancelled";
   readonly childSessionId: string | null;
+  /** Native parent child-session id for nested delegation. */
+  readonly parentSessionId?: string | null;
   readonly result: string | null;
   /**
    * When false, still project a normal tool turn item after the subagent update
@@ -2715,12 +2722,15 @@ export function makeAcpAdapterV2(
           const turnItemOrdinal =
             existing?.turnItemOrdinal ?? (yield* resolveItemOrdinal(context, nativeTaskId));
           const taskStatus = update.status;
+          const parentSubagent = update.parentSessionId
+            ? context.subagentsBySessionId.get(update.parentSessionId)
+            : undefined;
           const task: OrchestrationV2Subagent = {
             ...(existing?.task ?? {
               id: nodeId,
               threadId: context.input.threadId,
               runId: context.input.runId,
-              parentNodeId: context.input.rootNodeId,
+              parentNodeId: parentSubagent?.task.id ?? context.input.rootNodeId,
               origin: "provider_native" as const,
               createdBy: "agent" as const,
               driver,
@@ -2762,7 +2772,10 @@ export function makeAcpAdapterV2(
               type: "app_thread.created",
               driver,
               appThread: makeSubagentChildThread({
-                parentThread: context.input.appThread,
+                parentThread:
+                  parentSubagent === undefined
+                    ? context.input.appThread
+                    : { ...context.input.appThread, id: parentSubagent.childThreadId },
                 childThreadId,
                 parentNodeId: nodeId,
                 activeProviderThreadId: null,
@@ -3476,6 +3489,7 @@ export function makeAcpAdapterV2(
                 }
             }
           }
+          turnItem = flavor.projectToolCall?.(toolCall, turnItem) ?? turnItem;
           yield* emitProviderEvent({ type: "turn_item.updated", driver, turnItem });
           yield* rearmDeferredFinalize(context);
         });

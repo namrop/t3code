@@ -1567,3 +1567,48 @@ it.effect("returns method-not-found when SDK elicitation has no question handler
     assert.equal(response.error.code, -32601);
   }).pipe(Effect.scoped),
 );
+
+const encodeJsonValue = Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
+
+it.effect(
+  "fails a core request with a typed AcpRequestError when the agent replies with a plain JSON-RPC error",
+  () =>
+    Effect.gen(function* () {
+      // Real agents (here Hermes's Python ACP server) answer with the spec's
+      // error object, not effect's `_tag: "Cause"` envelope. That reply used
+      // to surface as a defect, Error("Internal error") with the code and
+      // data dropped, which no typed handler above the client caught: a
+      // steer in T3 thread a4f3514a (2026-10-02) left the session stuck.
+      const { stdio, input, output } = yield* makeInMemoryStdio();
+      const scope = yield* Scope.make();
+      const acp = yield* AcpClient.make(stdio).pipe(Effect.provideService(Scope.Scope, scope));
+
+      const promptFiber = yield* acp.agent
+        .prompt({
+          sessionId: "hermes-session-1",
+          prompt: [{ type: "text", text: "run the tests" }],
+        })
+        .pipe(Effect.flip, Effect.forkScoped);
+      const decodedPrompt = yield* decodePromptRequestLine(yield* Queue.take(output));
+      const errorReply = yield* encodeJsonValue({
+        jsonrpc: "2.0",
+        id: decodedPrompt.id,
+        error: {
+          code: -32603,
+          message: "Internal error",
+          data: { details: "'NoneType' object has no attribute 'startswith'" },
+        },
+      });
+      yield* Queue.offer(input, new TextEncoder().encode(`${errorReply}\n`));
+
+      const error = yield* Fiber.join(promptFiber);
+      assert.instanceOf(error, AcpError.AcpRequestError);
+      assert.deepInclude(error, {
+        code: -32603,
+        errorMessage: "Internal error",
+        data: { details: "'NoneType' object has no attribute 'startswith'" },
+        method: "session/prompt",
+      });
+      yield* Scope.close(scope, Exit.void);
+    }),
+);

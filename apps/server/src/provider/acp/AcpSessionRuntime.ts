@@ -95,6 +95,8 @@ export interface AcpSessionRuntimeOptions {
   readonly cwd: string;
   readonly resumeSessionId?: string;
   readonly resumeMethod?: "load" | "resume";
+  /** Only a Resource not found (-32002) load/resume may fall back to a fresh session. */
+  readonly onResumeNotFound?: "fail" | "new-session";
   readonly sessionLoadTimeout?: Duration.Input;
   readonly sessionLoadReplayIdleGap?: Duration.Input;
   readonly interruptPromptOnCancel?: boolean;
@@ -2223,6 +2225,24 @@ export const make = (
       return activationOptions?.mcpServers ?? options.mcpServers ?? [];
     };
 
+    const createReplacementSession = (activationOptions?: AcpSessionActivationOptions) =>
+      initialize.pipe(
+        Effect.flatMap((initialized) => {
+          const payload = {
+            cwd: options.cwd,
+            mcpServers: sessionMcpServers(initialized, activationOptions),
+            ...(options.additionalDirectories?.length
+              ? { additionalDirectories: options.additionalDirectories }
+              : {}),
+          };
+          return runLoggedRequest("session/new", payload, acp.agent.createSession(payload));
+        }),
+      );
+    const resumeNotFound = (error: EffectAcpErrors.AcpError) =>
+      options.onResumeNotFound === "new-session" &&
+      error._tag === "AcpRequestError" &&
+      error.code === -32002;
+
     const startOnce = Effect.gen(function* () {
       const initializeResult = yield* initialize;
 
@@ -2342,6 +2362,14 @@ export const make = (
         );
       }
       const { sessionId, sessionSetupResult } = yield* setupSession.pipe(
+        Effect.catchIf(resumeNotFound, () =>
+          createReplacementSession().pipe(
+            Effect.map((created) => ({
+              sessionId: created.sessionId,
+              sessionSetupResult: created,
+            })),
+          ),
+        ),
         Effect.catch((error) =>
           !isAcpAuthenticationRequired(error) || options.authenticateOnAuthRequired === false
             ? Effect.fail(error)
@@ -2531,6 +2559,11 @@ export const make = (
             return runLoadSessionWithReplayIdle(requestPayload, started.initializeResult);
           }),
           Effect.flatMap((response) => adoptSession(sessionId, response)),
+          Effect.catchIf(resumeNotFound, () =>
+            createReplacementSession(activationOptions).pipe(
+              Effect.flatMap((created) => adoptSession(created.sessionId, created)),
+            ),
+          ),
         ),
       resumeSession: (sessionId, activationOptions) =>
         start.pipe(
@@ -2547,6 +2580,11 @@ export const make = (
             );
           }),
           Effect.flatMap((response) => adoptSession(sessionId, response)),
+          Effect.catchIf(resumeNotFound, () =>
+            createReplacementSession(activationOptions).pipe(
+              Effect.flatMap((created) => adoptSession(created.sessionId, created)),
+            ),
+          ),
         ),
       forkSession: (sessionId, activationOptions) =>
         start.pipe(
