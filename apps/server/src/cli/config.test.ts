@@ -44,6 +44,43 @@ const makeDesktopBootstrap = (
 });
 
 it.layer(NodeServices.layer)("cli config resolution", (it) => {
+  it.effect("configures reply speech from its environment variables and stays off by default", () =>
+    Effect.gen(function* () {
+      const { join } = yield* Path.Path;
+      const baseDir = join(NodeOS.tmpdir(), "t3-cli-config-reply-speech");
+      const defaults = yield* resolveServerConfig(minimalWebFlags(baseDir), Option.none()).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })),
+            NetService.layer,
+          ),
+        ),
+      );
+      expect(defaults.speechUrl).toBeUndefined();
+      expect(defaults.speechModel).toBe("mlx-community/Kokoro-82M-bf16");
+      expect(defaults.speechVoice).toBe("bf_isabella");
+
+      const configured = yield* resolveServerConfig(minimalWebFlags(baseDir), Option.none()).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            ConfigProvider.layer(
+              ConfigProvider.fromEnv({
+                env: {
+                  T3CODE_SPEECH_URL: "https://voice.acubens.pharos.zone",
+                  T3CODE_SPEECH_MODEL: "custom-model",
+                  T3CODE_SPEECH_VOICE: "custom-voice",
+                },
+              }),
+            ),
+            NetService.layer,
+          ),
+        ),
+      );
+      expect(configured.speechUrl?.toString()).toBe("https://voice.acubens.pharos.zone/");
+      expect(configured.speechModel).toBe("custom-model");
+      expect(configured.speechVoice).toBe("custom-voice");
+    }),
+  );
   const defaultObservabilityConfig = {
     traceMinLevel: "Info",
     traceTimingEnabled: true,
@@ -53,6 +90,9 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
     otlpTracesUrl: undefined,
     otlpMetricsUrl: undefined,
     otlpLogsUrl: undefined,
+    speechUrl: undefined,
+    speechModel: "mlx-community/Kokoro-82M-bf16",
+    speechVoice: "bf_isabella",
     otlpTracesExport: DEFAULT_SIGNAL_EXPORT,
     otlpMetricsExport: DEFAULT_SIGNAL_EXPORT,
     otlpLogsExport: DEFAULT_SIGNAL_EXPORT,

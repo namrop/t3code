@@ -21,6 +21,8 @@ import { DEFAULT_SIGNAL_EXPORT, type SignalExport } from "@t3tools/shared/observ
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 
 export const DEFAULT_PORT = 3773;
+export const DEFAULT_SPEECH_MODEL = "mlx-community/Kokoro-82M-bf16";
+export const DEFAULT_SPEECH_VOICE = "bf_isabella";
 
 export const RuntimeMode = Schema.Literals(["web", "desktop"]);
 export type RuntimeMode = typeof RuntimeMode.Type;
@@ -73,6 +75,9 @@ export class ServerConfig extends Context.Service<
     readonly otlpTracesUrl: string | undefined;
     readonly otlpMetricsUrl: string | undefined;
     readonly otlpLogsUrl: string | undefined;
+    readonly speechUrl?: URL | undefined;
+    readonly speechModel?: string;
+    readonly speechVoice?: string;
     /**
      * How each signal is exported. Read instead of a process-wide setting so
      * the wire format, credential, and schedule travel with the endpoint they
@@ -217,6 +222,9 @@ const makeTest = Effect.fn("ServerConfig.makeTest")(function* (
     otlpTracesUrl: undefined,
     otlpMetricsUrl: undefined,
     otlpLogsUrl: undefined,
+    speechUrl: undefined,
+    speechModel: DEFAULT_SPEECH_MODEL,
+    speechVoice: DEFAULT_SPEECH_VOICE,
     otlpTracesExport: DEFAULT_SIGNAL_EXPORT,
     otlpMetricsExport: DEFAULT_SIGNAL_EXPORT,
     otlpLogsExport: DEFAULT_SIGNAL_EXPORT,

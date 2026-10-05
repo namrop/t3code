@@ -542,7 +542,9 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
       const isVideo = INLINE_VIDEO_MIME_TYPE_PATTERN.test(videoMimeType);
       const inlinePreviewMimeType =
         input.resource.disposition === "inline" && extension !== null
-          ? inlinePreviewMimeTypeForExtension(extension)
+          ? /^audio\//i.test(videoMimeType)
+            ? videoMimeType
+            : inlinePreviewMimeTypeForExtension(extension)
           : undefined;
       if (!isGenericFile) {
         imageDimensions = yield* readImageDimensionsFromHeader(attachmentPath);

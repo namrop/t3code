@@ -3475,7 +3475,12 @@ export function makeAcpAdapterV2(
                   turnItem = {
                     ...base,
                     type: "dynamic_tool",
-                    toolName: toolCall.title ?? toolCall.kind ?? null,
+                    // Transcript echo has a stable extension name even for local ACP commands.
+                    toolName:
+                      unknownRecord(unknownRecord(toolCall.data.meta)?.hermes)?.toolName ===
+                      "voice_note_transcript"
+                        ? "voice_note_transcript"
+                        : (toolCall.title ?? toolCall.kind ?? null),
                     input: rawInput ?? {},
                     ...(rawOutput === undefined ? {} : { output: rawOutput }),
                   };

@@ -293,7 +293,20 @@ import {
 // components (LiveElapsed) handle it.
 // ---------------------------------------------------------------------------
 
+import { serverEnvironment } from "../../state/server";
+import { toastManager } from "../ui/toast";
+import { MessageListenButton } from "./MessageListenButton";
+import { VoiceNotePlayer, VoiceNoteTranscript } from "./VoiceNotePlayer";
+import { isAudioAttachment } from "@t3tools/contracts";
+import { createReplySpeechPlayback, type ReplySpeechPlaybackState } from "./replySpeechPlayback";
+import { requestReplySpeechAudio } from "./replySpeechRequest";
+import { voiceNoteTranscriptsByRun } from "./voiceNoteTranscripts";
+
 interface TimelineRowSharedState {
+  replySpeechAvailable: boolean;
+  replySpeechPlaybackState: ReplySpeechPlaybackState;
+  onToggleReplySpeech: (messageId: string, text: string) => void;
+  voiceTranscripts: ReadonlyMap<RunId, ReadonlyArray<string>>;
   citationRequest: AssistantCitationTarget | null;
   listRef: React.RefObject<LegendListRef | null>;
   timestampFormat: TimestampFormat;
@@ -561,6 +574,43 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   loadEarlier = null,
 }: MessagesTimelineProps) {
   const listIdentityKey = displayThreadKey ?? routeThreadKey;
+  const [replySpeechPlaybackState, setReplySpeechPlaybackState] =
+    useState<ReplySpeechPlaybackState>({ messageId: null, phase: "idle" });
+  const replySpeechPlayback = useMemo(
+    () =>
+      createReplySpeechPlayback({
+        requestAudio: (text, signal) =>
+          requestReplySpeechAudio(activeThreadEnvironmentId, text, signal),
+        createObjectUrl: (blob) => URL.createObjectURL(blob),
+        revokeObjectUrl: (url) => URL.revokeObjectURL(url),
+        onStateChange: setReplySpeechPlaybackState,
+        onError: (error) =>
+          toastManager.add({
+            type: "error",
+            title: "Could not play reply",
+            description: error.message,
+          }),
+      }),
+    [activeThreadEnvironmentId],
+  );
+  const speechServerConfig = useAtomValue(
+    serverEnvironment.configValueAtom(activeThreadEnvironmentId),
+  );
+  const replySpeechAvailable = speechServerConfig?.replySpeech === true;
+  const onToggleReplySpeech = useCallback(
+    (messageId: string, text: string) => {
+      void replySpeechPlayback.toggle(messageId, text);
+    },
+    [replySpeechPlayback],
+  );
+  useEffect(() => () => replySpeechPlayback.dispose(), [replySpeechPlayback]);
+  // A reply being read aloud stops when the timeline switches to another thread.
+  // oxlint-disable-next-line react/exhaustive-effect-dependencies -- listIdentityKey is the trigger, not an input.
+  useEffect(() => replySpeechPlayback.stop(), [listIdentityKey, replySpeechPlayback]);
+  const voiceTranscripts = useMemo(
+    () => voiceNoteTranscriptsByRun(timelineEntries),
+    [timelineEntries],
+  );
   const rememberedPosition = useMemo(
     () => readTimelinePosition(listIdentityKey),
     [listIdentityKey],
@@ -1183,6 +1233,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onWorktreeSetupWorkLocally: onWorktreeSetupWorkLocally ?? null,
       onOpenWorktreeSetupTerminal: onOpenWorktreeSetupTerminal ?? null,
       workGroupViewState,
+      replySpeechAvailable,
+      replySpeechPlaybackState,
+      onToggleReplySpeech,
+      voiceTranscripts,
     }),
     [
       readyCitationRequest,
@@ -1218,6 +1272,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onWorktreeSetupWorkLocally,
       onOpenWorktreeSetupTerminal,
       workGroupViewState,
+      replySpeechAvailable,
+      replySpeechPlaybackState,
+      onToggleReplySpeech,
+      voiceTranscripts,
     ],
   );
   const compactionAwaitingRow =
@@ -2199,6 +2257,24 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
                   <span className="min-w-0 flex-1 truncate">{file.name}</span>
                 </>
               );
+              if (isAudioAttachment(file) && file.downloadable !== false) {
+                return (
+                  <VoiceNotePlayer
+                    environmentId={ctx.activeThreadEnvironmentId}
+                    key={file.id}
+                    attachment={file}
+                    fallback={
+                      <button
+                        type="button"
+                        onClick={() => ctx.onFileOpen(file)}
+                        className="flex items-center gap-2 py-1 text-sm"
+                      >
+                        {fileIdentity}
+                      </button>
+                    }
+                  />
+                );
+              }
               if (file.downloadable !== false) {
                 return (
                   <div key={file.id} className="flex min-w-0 items-center gap-1">
@@ -2256,6 +2332,11 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
             markdownCwd={ctx.markdownCwd}
           />
         </div>
+        {(row.message.attachments ?? []).some(isAudioAttachment) && row.message.runId
+          ? (ctx.voiceTranscripts.get(row.message.runId) ?? []).map((transcript) => (
+              <VoiceNoteTranscript key={transcript} text={transcript} />
+            ))
+          : null}
       </div>
       {row.projectedItem &&
       row.projectedItem.item.status !== "completed" &&
@@ -2644,6 +2725,17 @@ function AssistantMessageMeta({
         showCopyButton={showCopyButton}
         streaming={copyStreaming}
       />
+      {!message.streaming &&
+      projectedItem?.item.status === "completed" &&
+      ctx.replySpeechAvailable &&
+      message.text.trim() ? (
+        <MessageListenButton
+          messageId={message.id}
+          text={message.text}
+          playbackState={ctx.replySpeechPlaybackState}
+          onToggle={ctx.onToggleReplySpeech}
+        />
+      ) : null}
       {!message.streaming && (
         <Tooltip>
           <TooltipTrigger render={<p className="text-muted-foreground text-xs tabular-nums" />}>
@@ -4053,6 +4145,7 @@ function UserMessageElementDetails({
 }
 
 interface UserMessageContextRenderContext {
+  environmentId: EnvironmentId;
   reference: ChatMarkdownContextReference;
   annotationImage: ChatImageAttachment | null;
   attachment: ChatImageAttachment | ChatFileAttachment | null;
@@ -4162,7 +4255,7 @@ const userMessageContextPresentationRegistry = createContextPresentationRegistry
         const disabled =
           attachment.downloadable === false && (!isVideo || attachment.previewUrl === undefined);
         const size = formatAttachmentSize(record.sizeBytes);
-        return (
+        const chip = (
           <FileChip
             name={record.name}
             size={size}
@@ -4176,6 +4269,16 @@ const userMessageContextPresentationRegistry = createContextPresentationRegistry
             }
             tooltip={`${record.name}\n${size}`}
           />
+        );
+        return isAudioAttachment(attachment) && attachment.downloadable !== false ? (
+          <VoiceNotePlayer
+            environmentId={context.environmentId}
+            attachment={attachment}
+            fallback={chip}
+            copyMarkdown={context.copyMarkdown}
+          />
+        ) : (
+          chip
         );
       },
     },
@@ -4297,13 +4400,14 @@ function UserMessageContextReferenceChip(props: {
   onExpandVideo: (file: ChatFileAttachment) => void;
   onOpenFile: (file: ChatFileAttachment) => void;
 }) {
-  const { resolvedTheme } = use(TimelineRowCtx);
+  const { resolvedTheme, activeThreadEnvironmentId } = use(TimelineRowCtx);
   const copyMarkdown = formatComposerContextReference({
     kind: props.reference.kind,
     contextId: props.reference.contextId as ComposerContextId,
     label: props.reference.label,
   });
   return userMessageContextPresentationRegistry.render(props.reference.kind, props.record, {
+    environmentId: activeThreadEnvironmentId,
     reference: props.reference,
     annotationImage: props.annotationImage,
     attachment: props.attachment,
