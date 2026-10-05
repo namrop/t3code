@@ -1,8 +1,10 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
 
@@ -16,6 +18,8 @@ const decodeReplayStatus = Schema.decodeEffect(
     }),
   ),
 );
+
+class ReplayStatusPending extends Data.TaggedError("ReplayStatusPending")<{}> {}
 
 const mcpServers = [{ name: "fixture", command: "fixture-mcp", args: [], env: [] }];
 const request = (method: string, params: unknown) => ({
@@ -133,7 +137,17 @@ describe("missing ACP sessions", () => {
         } else {
           expect(yield* setup.pipe(Effect.flip)).toMatchObject({ _tag: "AcpRequestError", code });
         }
-        const status = yield* decodeReplayStatus(yield* fs.readFileString(statusPath));
+        // The replay agent rewrites status.json (truncate, then write) after it
+        // emits each response, so a read right after the last one can find it
+        // empty under load. Read until it holds the final cursor or a failure.
+        const status = yield* fs.readFileString(statusPath).pipe(
+          Effect.flatMap(decodeReplayStatus),
+          Effect.filterOrFail(
+            (current) => current.failure !== undefined || current.cursor === current.total,
+            () => new ReplayStatusPending(),
+          ),
+          Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 200 }),
+        );
         expect(status.failure).toBeUndefined();
         expect(status.cursor).toBe(status.total);
       }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
