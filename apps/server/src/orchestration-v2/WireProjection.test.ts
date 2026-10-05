@@ -49,6 +49,12 @@ const base = {
 };
 
 describe("orchestration V2 wire projection", () => {
+  it("sends a completed voice-note transcript in full rather than a tool preview", () => {
+    const output = "The voice note includes every word.\n".repeat(200);
+    expect(
+      projectTurnItemForWire({ ...base, toolName: "voice_note_transcript", output }),
+    ).toMatchObject({ output });
+  });
   it("keeps copied handoff transcripts out of activity items and live events", () => {
     const item = {
       ...base,

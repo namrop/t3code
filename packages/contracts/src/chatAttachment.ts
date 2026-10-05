@@ -10,6 +10,66 @@ import {
   TrimmedString,
 } from "./baseSchemas.ts";
 
+const ACP_AUDIO_ONLY_EXTENSIONS = new Set([
+  ".aac",
+  ".caf",
+  ".flac",
+  ".m4a",
+  ".mp3",
+  ".mpga",
+  ".oga",
+  ".ogg",
+  ".opus",
+  ".wav",
+]);
+
+/**
+ * Largest recording sent inline as an ACP audio block. an ACP agent reads ACP over
+ * stdio with a 50 MiB line limit (`acp.core.DEFAULT_STDIO_BUFFER_LIMIT_BYTES`)
+ * and base64 adds a third, so 25 MiB of audio keeps the frame well inside it.
+ * A larger recording stays a path line, which an ACP agent can still open.
+ */
+export const ACP_MAX_AUDIO_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
+/** True for a file attachment an ACP agent should receive as a voice note. */
+export function isAudioAttachment(attachment: {
+  readonly type: string;
+  readonly name: string;
+  readonly mimeType: string;
+}): boolean {
+  if (attachment.type !== "file") return false;
+  const mimeType = attachment.mimeType.split(";", 1)[0]!.trim().toLowerCase();
+  if (mimeType.startsWith("audio/")) return true;
+  if (mimeType !== "" && mimeType !== "application/octet-stream") return false;
+  const dot = attachment.name.lastIndexOf(".");
+  return dot >= 0 && ACP_AUDIO_ONLY_EXTENSIONS.has(attachment.name.slice(dot).toLowerCase());
+}
+
+const ACP_AUDIO_EXTENSION_MIME_TYPES: Record<string, string> = {
+  ".aac": "audio/aac",
+  ".caf": "audio/x-caf",
+  ".flac": "audio/flac",
+  ".m4a": "audio/mp4",
+  ".mp3": "audio/mpeg",
+  ".mpga": "audio/mpeg",
+  ".oga": "audio/ogg",
+  ".ogg": "audio/ogg",
+  ".opus": "audio/opus",
+  ".wav": "audio/wav",
+};
+
+/** The audio block's `mimeType`: the picker's when it is audio, else from the extension. */
+export function audioAttachmentMimeType(attachment: {
+  readonly name: string;
+  readonly mimeType: string;
+}): string {
+  const mimeType = attachment.mimeType.trim();
+  if (mimeType.toLowerCase().startsWith("audio/")) return mimeType;
+  const dot = attachment.name.lastIndexOf(".");
+  const extension = dot >= 0 ? attachment.name.slice(dot).toLowerCase() : "";
+  return ACP_AUDIO_EXTENSION_MIME_TYPES[extension] ?? "audio/mpeg";
+}
+
 export const PROVIDER_SEND_TURN_MAX_INPUT_CHARS = 120_000;
 export const PROVIDER_SEND_TURN_MAX_ATTACHMENTS = 100;
 export const PROVIDER_SEND_TURN_MAX_IMAGE_BYTES = 10 * 1024 * 1024;

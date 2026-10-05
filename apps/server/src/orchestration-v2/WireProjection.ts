@@ -106,6 +106,7 @@ export function projectTurnItemForWire(item: OrchestrationV2TurnItem): Orchestra
         result: item.result === null ? null : (truncateDetail(item.result) ?? null),
       };
     case "dynamic_tool": {
+      if (item.toolName === "voice_note_transcript" && item.status === "completed") return item;
       const { output: rawOutput, ...projected } = item;
       const output = compactDynamicToolOutput(rawOutput);
       return {

@@ -219,6 +219,7 @@ function baseSnapshot(
     // so selectors must not offer these instances for commit, PR, branch, or
     // title generation.
     supportsTextGeneration: false,
+    supportsAudioPrompts: input.probe?.probe.supportsAudioPrompts === true,
     enabled: input.settings.enabled,
     installed: input.installed,
     version: input.version,

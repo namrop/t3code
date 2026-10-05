@@ -253,6 +253,8 @@ export function acpRegistryProbeResult(
   return AcpRegistryProbeResult.make({
     instanceId,
     ready: true,
+    supportsAudioPrompts:
+      started.initializeResult.agentCapabilities?.promptCapabilities?.audio === true,
     icon,
     authMethods: normalizeAcpRegistryAuthMethods(started.initializeResult.authMethods, spawn),
     sessionManagement: {

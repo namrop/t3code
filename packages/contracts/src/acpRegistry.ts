@@ -272,6 +272,7 @@ export const AcpRegistryProbeModel = Schema.Struct({
 export type AcpRegistryProbeModel = typeof AcpRegistryProbeModel.Type;
 
 export const AcpRegistryProbeResult = Schema.Struct({
+  supportsAudioPrompts: Schema.optionalKey(Schema.Boolean),
   instanceId: ProviderInstanceId,
   // `ready` is only returned after a disposable ACP session/new probe completes.
   // It does not imply that authentication was passively detected.
