@@ -84,6 +84,14 @@ const foldProviderInstanceEnabledFlags = (settings: ServerSettings): ServerSetti
   let changed = false;
   const providerInstances: Record<string, ProviderInstanceConfig> = {};
   for (const [instanceId, instance] of Object.entries(settings.providerInstances)) {
+    // The fork and upstream build share settings.json. For the default Hermes
+    // slot the legacy block is canonical, including edits by the old build.
+    if (instanceId === "hermes" && instance.driver === "hermes") {
+      const { enabled, ...config } = settings.providers.hermes;
+      providerInstances[instanceId] = { ...instance, enabled, config };
+      changed = true;
+      continue;
+    }
     const config = instance.config;
     // Only fold boolean flags: a malformed `enabled` (e.g. `"false"`) must
     // stay in the blob so driver schema validation flags it instead of the
@@ -214,6 +222,25 @@ export function applyProviderInstanceMutation(
   const providerInstances = { ...settings.providerInstances };
   if (mutation.operation === "upsert" || mutation.operation === "create") {
     providerInstances[mutation.instanceId] = mutation.instance;
+    if (mutation.instanceId === "hermes" && mutation.instance.driver === "hermes") {
+      // Do not reset providers.hermes to defaults when the v2 instance form
+      // saves. Retain a schema-readable Hermes block for the old build.
+      const config = mutation.instance.config;
+      return {
+        ...settings,
+        providerInstances,
+        providers: {
+          ...settings.providers,
+          hermes: {
+            ...settings.providers.hermes,
+            ...(config !== null && typeof config === "object" && !Array.isArray(config)
+              ? config
+              : {}),
+            enabled: resolveProviderInstanceEnabled(mutation.instance),
+          },
+        },
+      };
+    }
   } else {
     delete providerInstances[mutation.instanceId];
   }
@@ -494,6 +521,9 @@ const PERSISTED_SERVER_SETTINGS_DEFAULTS = {
     cursor: { ...DEFAULT_SERVER_SETTINGS.providers.cursor, enabled: undefined },
     grok: { ...DEFAULT_SERVER_SETTINGS.providers.grok, enabled: undefined },
     opencode: { ...DEFAULT_SERVER_SETTINGS.providers.opencode, enabled: undefined },
+    // Both builds share this block. Keep its full legacy shape, even when
+    // disabled or reset, rather than writing only the v2 instance envelope.
+    hermes: undefined,
   },
 };
 
