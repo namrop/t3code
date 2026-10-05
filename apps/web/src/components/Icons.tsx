@@ -369,6 +369,28 @@ export const GrokIcon: Icon = ({ className, ...props }) => (
   </svg>
 );
 
+export const HERMES_LOGO_ASSET = {
+  href: "/providers/hermes.png",
+  width: 150,
+  height: 150,
+  sha256: "2627a50f6826b2fae83183533efee34c8fb8197bc5af60872420c894e8f5b9eb",
+} as const;
+
+export const HermesIcon: Icon = (props) => (
+  <svg
+    {...props}
+    viewBox={`0 0 ${HERMES_LOGO_ASSET.width} ${HERMES_LOGO_ASSET.height}`}
+    fill="none"
+  >
+    <image
+      href={HERMES_LOGO_ASSET.href}
+      width={HERMES_LOGO_ASSET.width}
+      height={HERMES_LOGO_ASSET.height}
+      preserveAspectRatio="xMidYMid meet"
+    />
+  </svg>
+);
+
 export const TraeIcon: Icon = (props) => (
   <svg {...props} viewBox="0 0 24 24" fill="currentColor">
     {/* Back rectangle: left strip + bottom strip drawn separately — empty bottom-left corner is the gap between them */}
