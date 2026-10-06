@@ -267,6 +267,11 @@ export interface AcpAdapterV2Flavor {
   readonly sessionModeForPolicy?: (
     policy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
   ) => string | undefined;
+  /** Access controls exposed as config options, independent of ACP thinking modes. */
+  readonly applyRuntimePolicy?: (input: {
+    readonly runtime: AcpSessionRuntime.AcpSessionRuntime["Service"];
+    readonly policy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
+  }) => Effect.Effect<void, EffectAcpErrors.AcpError>;
   /**
    * Opts the session into the ACP client `fs` capability. Agents read and write
    * files themselves under their own permission model unless a flavor sets
@@ -6382,6 +6387,7 @@ export function makeAcpAdapterV2(
             );
           }
           const policyMode = flavor.sessionModeForPolicy?.(runtimePolicy);
+          yield* flavor.applyRuntimePolicy?.({ runtime, policy: runtimePolicy }) ?? Effect.void;
           if (policyMode !== undefined) {
             yield* runtime.setMode(policyMode);
           }
@@ -6954,6 +6960,12 @@ export function makeAcpAdapterV2(
                 yield* Ref.set(activeInteractionMode, turnInput.runtimePolicy.interactionMode);
               }
             }
+            // Access policies are live state, not model tuning. Reapply on the
+            // activated session even when model and interaction mode are unchanged.
+            yield* (
+              flavor.applyRuntimePolicy?.({ runtime, policy: turnInput.runtimePolicy }) ??
+                Effect.void
+            );
             yield* Ref.set(lastTurnRoute, {
               threadId: turnInput.threadId,
               providerThreadId: turnInput.providerThread.id,

@@ -10,9 +10,18 @@ import type { ChildProcessSpawner } from "effect/process";
 import type { SelfInvocation } from "@t3tools/shared/nodeRuntime";
 import type { ServerConfig } from "../../config.ts";
 import type { IdAllocatorV2 } from "../IdAllocator.ts";
-import { makeOpenClawAcpRuntime } from "../../provider/acp/OpenClawAcpSupport.ts";
+import {
+  applyOpenClawAcpModelSelection,
+  makeOpenClawAcpRuntime,
+  resolveOpenClawPermissionMode,
+} from "../../provider/acp/OpenClawAcpSupport.ts";
+import { acpPermissionDisposition } from "../../provider/acp/AcpClientPolicy.ts";
 import type * as AcpSessionRuntime from "../../provider/acp/AcpSessionRuntime.ts";
-import { normalizeOpenClawToolCall, projectOpenClawToolCall } from "./OpenClawAcp.ts";
+import {
+  extractOpenClawSubagentUpdate,
+  normalizeOpenClawToolCall,
+  projectOpenClawToolCall,
+} from "./OpenClawAcp.ts";
 import {
   AcpProviderCapabilitiesV2,
   makeAcpAdapterV2,
@@ -44,7 +53,13 @@ export function makeOpenClawAcpAdapterFlavor(
     runtimeHarness: "OpenClaw",
     capabilities: {
       ...AcpProviderCapabilitiesV2,
+      sessions: {
+        ...AcpProviderCapabilitiesV2.sessions,
+        supportsModelSwitchInSession: true,
+        supportsRuntimeModeSwitchInSession: true,
+      },
       tools: { ...AcpProviderCapabilitiesV2.tools, supportsMcpTools: false },
+      subagents: { ...AcpProviderCapabilitiesV2.subagents, supportsSubagents: true },
     },
     omitMcpServers: true,
     sessionRequestMeta: (threadId) =>
@@ -70,8 +85,26 @@ export function makeOpenClawAcpAdapterFlavor(
                 .pipe(Effect.tap((started) => options.onSessionStarted?.(started) ?? Effect.void)),
           })),
         )),
-    // Model and access config-option selection are added at this flavor seam.
-    applyModelSelection: () => Effect.succeed(undefined),
+    applyModelSelection: ({ runtime, modelSelection }) =>
+      applyOpenClawAcpModelSelection({ runtime, requestedModelId: modelSelection.model }),
+    applyRuntimePolicy: ({ runtime, policy }) =>
+      Effect.gen(function* () {
+        const options = yield* runtime.getConfigOptions;
+        const access = options.find(
+          (option) => option.id === "permission_mode" && option.type === "select",
+        );
+        const value = resolveOpenClawPermissionMode(policy.runtimeMode);
+        if (access?.type === "select" && access.currentValue !== value) {
+          yield* runtime.setConfigOption(access.id, value);
+        }
+      }),
+    // OpenClaw's classifier owns Auto. Requests it still makes must reach the user.
+    permissionDisposition: (policy, request) =>
+      policy.runtimeMode === "auto" ? "ask" : acpPermissionDisposition(policy, request),
+    extractSubagentUpdate: extractOpenClawSubagentUpdate,
+    // Keep the subscriber and child lineage alive after session/prompt returns,
+    // including nested spawns arriving after their parent's spawn tool settled.
+    deferFinalizeForBackgroundWork: true,
     normalizeToolCall: normalizeOpenClawToolCall,
     projectToolCall: projectOpenClawToolCall,
     supportsImagePrompts: true,

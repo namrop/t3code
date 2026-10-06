@@ -94,7 +94,7 @@ import {
   type AcpAdapterV2SubagentUpdate,
 } from "./AcpAdapterV2.ts";
 
-import { makeOpenClawAdapterV2 } from "./OpenClawAdapterV2.ts";
+import { makeOpenClawAdapterV2, makeOpenClawAcpAdapterFlavor } from "./OpenClawAdapterV2.ts";
 import { makeHermesAdapterV2 } from "./HermesAdapterV2.ts";
 import { makeAcpRegistryAdapterV2 } from "./AcpRegistryAdapterV2.ts";
 import { makeGrokAdapterV2 } from "./GrokAdapterV2.ts";
@@ -825,6 +825,275 @@ describe("AcpAdapterV2", () => {
             ),
           );
         }
+      }).pipe(Effect.provide(testLayer), Effect.scoped),
+  );
+
+  it.effect("OpenClaw applies model and access config on open and same-session turns", () =>
+    Effect.gen(function* () {
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const fs = yield* FileSystem.FileSystem;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const path = yield* Path.Path;
+      const serverConfig = yield* ServerConfig.ServerConfig;
+      const selfInvocation = yield* resolveSelfInvocation();
+      const mockAgentPath = yield* path.fromFileUrl(
+        new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+      );
+      const calls: Array<[string, string | boolean]> = [];
+      let model = "openai/original";
+      let permission = "read-only";
+      const instanceId = ProviderInstanceId.make("openclaw");
+      const threadId = ThreadId.make("thread-openclaw-config");
+      const adapter = makeOpenClawAdapterV2({
+        crypto: yield* Crypto.Crypto,
+        instanceId,
+        fileSystem: fs,
+        idAllocator,
+        serverConfig,
+        selfInvocation,
+        settings: DEFAULT_OPENCLAW_SETTINGS,
+        environment: {},
+        childProcessSpawner: spawner,
+        makeRuntime: makeMockRuntime({
+          childProcessSpawner: spawner,
+          mockAgentPath,
+          wrapRuntime: (runtime) => ({
+            ...runtime,
+            getConfigOptions: Effect.sync(() => [
+              {
+                id: "model",
+                type: "select",
+                name: "Model",
+                category: "model",
+                currentValue: model,
+                options: [],
+              },
+              {
+                id: "permission_mode",
+                type: "select",
+                name: "Access",
+                currentValue: permission,
+                options: [],
+              },
+            ]),
+            setConfigOption: (id, value) =>
+              Effect.sync(() => {
+                calls.push([id, value]);
+                if (id === "model") model = String(value);
+                else permission = String(value);
+                return { configOptions: [] };
+              }),
+          }),
+        }),
+      });
+      const policy = (runtimeMode: ProviderAdapterV2RuntimePolicy["runtimeMode"]) =>
+        ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode,
+          interactionMode: "default",
+          cwd: process.cwd(),
+        });
+      const modelSelection = { instanceId, model: "openai/original" };
+      const runtime = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("session-openclaw-config"),
+        modelSelection,
+        runtimePolicy: policy("approval-required"),
+      });
+      assert.deepEqual(calls, [["permission_mode", "guarded"]]);
+      const providerThread = yield* runtime.ensureThread({
+        threadId,
+        modelSelection,
+        runtimePolicy: policy("approval-required"),
+      });
+      for (const [ordinal, runtimeMode, requestedModel] of [
+        [1, "auto", "openai/original"],
+        [2, "full-access", "google/other"],
+        [3, "auto-accept-edits", "openai/original"],
+      ] as const) {
+        yield* runtime.startTurn({
+          ...makeTurnInput({
+            threadId,
+            providerThread,
+            instanceId,
+            runtimePolicy: policy(runtimeMode),
+            now: yield* DateTime.now,
+            ordinal,
+          }),
+          modelSelection: { instanceId, model: requestedModel },
+        });
+        yield* runtime.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runDrain,
+        );
+      }
+      assert.deepEqual(calls, [
+        ["permission_mode", "guarded"],
+        ["permission_mode", "workspace"],
+        ["model", "google/other"],
+        ["permission_mode", "full"],
+        ["model", "openai/original"],
+        ["permission_mode", "guarded"],
+      ]);
+    }).pipe(Effect.provide(testLayer), Effect.scoped),
+  );
+
+  it.effect(
+    "OpenClaw projects nested children and late lifecycle updates after the spawn and prompt return",
+    () =>
+      Effect.gen(function* () {
+        const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const fs = yield* FileSystem.FileSystem;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const path = yield* Path.Path;
+        const serverConfig = yield* ServerConfig.ServerConfig;
+        const selfInvocation = yield* resolveSelfInvocation();
+        const mockAgentPath = yield* path.fromFileUrl(
+          new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+        );
+        const instanceId = ProviderInstanceId.make("openclaw");
+        const threadId = ThreadId.make("thread-openclaw-children");
+        const settled = yield* Deferred.make<void>();
+        const scheduled = yield* Deferred.make<void>();
+        let handler:
+          | Parameters<AcpSessionRuntime.AcpSessionRuntime["Service"]["handleSessionUpdate"]>[0]
+          | undefined;
+        const options = {
+          crypto: yield* Crypto.Crypto,
+          instanceId,
+          fileSystem: fs,
+          idAllocator,
+          serverConfig,
+          selfInvocation,
+          settings: DEFAULT_OPENCLAW_SETTINGS,
+          environment: {},
+          childProcessSpawner: spawner,
+          makeRuntime: makeMockRuntime({
+            childProcessSpawner: spawner,
+            mockAgentPath,
+            wrapRuntime: (runtime) => ({
+              ...runtime,
+              handleSessionUpdate: (next) =>
+                Effect.sync(() => {
+                  handler = next;
+                }).pipe(Effect.andThen(runtime.handleSessionUpdate(next))),
+              prompt: () =>
+                Effect.gen(function* () {
+                  yield* handler!({
+                    sessionId: "mock-session-1",
+                    update: {
+                      sessionUpdate: "tool_call",
+                      toolCallId: "spawn",
+                      title: "sessions_spawn",
+                      kind: "other",
+                      status: "completed",
+                      _meta: {
+                        openclaw: {
+                          toolName: "sessions_spawn",
+                          subagent: {
+                            id: "child",
+                            parentId: null,
+                            event: "started",
+                            goal: "Check",
+                            model: "openai/sol",
+                          },
+                        },
+                      },
+                    },
+                  });
+                  return { stopReason: "end_turn" };
+                }),
+            }),
+          }),
+        };
+        const adapter = makeAcpAdapterV2({
+          ...options,
+          flavor: makeOpenClawAcpAdapterFlavor(options),
+          testHooks: {
+            afterPromptSettledWithBackgroundWork: () =>
+              Deferred.succeed(settled, undefined).pipe(Effect.asVoid),
+            onDeferredFinalizeScheduled: () =>
+              Deferred.succeed(scheduled, undefined).pipe(Effect.asVoid),
+          },
+        });
+        const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "auto",
+          interactionMode: "default",
+          cwd: process.cwd(),
+        });
+        const modelSelection = { instanceId, model: "openclaw-default" };
+        const runtime = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("session-openclaw-children"),
+          modelSelection,
+          runtimePolicy,
+        });
+        const events = yield* Queue.unbounded<ProviderAdapterV2Event>();
+        yield* runtime.events.pipe(
+          Stream.runForEach((event) => Queue.offer(events, event)),
+          Effect.forkScoped,
+        );
+        const providerThread = yield* runtime.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+        });
+        yield* runtime.startTurn(
+          makeTurnInput({
+            threadId,
+            providerThread,
+            instanceId,
+            runtimePolicy,
+            now: yield* DateTime.now,
+          }),
+        );
+        yield* Deferred.await(settled);
+        for (const [id, parentId, event, status] of [
+          ["child", null, "progress", undefined],
+          ["nested", "child", "started", undefined],
+          ["child", null, "completed", "completed"],
+          ["nested", "child", "completed", "failed"],
+        ] as const) {
+          yield* handler!({
+            sessionId: "mock-session-1",
+            update: {
+              sessionUpdate: "tool_call_update",
+              toolCallId: id === "child" ? "spawn" : "nested-spawn",
+              _meta: {
+                openclaw: {
+                  toolName: "sessions_spawn",
+                  subagent: {
+                    id,
+                    parentId,
+                    event,
+                    goal: "Check",
+                    model: "openai/sol",
+                    ...(status ? { status, summary: `${id} done` } : {}),
+                  },
+                },
+              },
+            },
+          });
+        }
+        yield* Deferred.await(scheduled);
+        yield* TestClock.adjust("3000 millis");
+        const collected: ProviderAdapterV2Event[] = [];
+        while (true) {
+          const event = yield* Queue.take(events);
+          collected.push(event);
+          if (event.type === "turn.terminal") break;
+        }
+        const tasks = collected.filter((e) => e.type === "subagent.updated").map((e) => e.subagent);
+        const child = tasks.find(
+          (t) => t.nativeTaskRef?.nativeId === "child" && t.status === "completed",
+        );
+        const nested = tasks.find(
+          (t) => t.nativeTaskRef?.nativeId === "nested" && t.status === "failed",
+        );
+        assert.isDefined(child);
+        assert.isDefined(nested);
+        assert.equal(nested?.parentNodeId, child?.id);
+        assert.equal(child?.result, "child done");
+        assert.equal(nested?.result, "nested done");
       }).pipe(Effect.provide(testLayer), Effect.scoped),
   );
 

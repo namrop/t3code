@@ -1,5 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { ThreadId } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+
 import {
   buildOpenClawAcpSpawnInput,
   buildOpenClawModelsFromConfigOptions,
@@ -12,6 +14,182 @@ import {
 } from "./OpenClawAcp.ts";
 import type { AcpToolCallState } from "../../provider/acp/AcpRuntimeModel.ts";
 describe("OpenClaw ACP compatibility", () => {
+  it("advertises in-session model, access and native subagent support", () => {
+    const flavor = makeOpenClawAcpAdapterFlavor({ settings: {} } as never);
+    expect(flavor.capabilities.sessions.supportsModelSwitchInSession).toBe(true);
+    expect(flavor.capabilities.sessions.supportsRuntimeModeSwitchInSession).toBe(true);
+    expect(flavor.capabilities.subagents.supportsSubagents).toBe(true);
+  });
+  it.effect("sets exact model refs and switches back without using thinking modes", () =>
+    Effect.gen(function* () {
+      const calls: unknown[] = [];
+      let currentValue = "openai/original";
+      const runtime = {
+        getConfigOptions: Effect.sync(() => [
+          { id: "model", type: "select", category: "model", currentValue },
+        ]),
+        setConfigOption: (id: string, value: string) =>
+          Effect.sync(() => {
+            calls.push([id, value]);
+            currentValue = value;
+            return { configOptions: [] };
+          }),
+      } as never;
+      const flavor = makeOpenClawAcpAdapterFlavor({ settings: {} } as never);
+      const apply = (model: string) =>
+        flavor.applyModelSelection!({
+          runtime,
+          startResult: {} as never,
+          modelSelection: { instanceId: "openclaw" as never, model },
+        });
+      expect(yield* apply("openclaw-default")).toBe("openai/original");
+      yield* apply("openai/original");
+      yield* apply("openrouter/anthropic/other");
+      yield* apply("openai/original");
+      expect(calls).toEqual([
+        ["model", "openrouter/anthropic/other"],
+        ["model", "openai/original"],
+      ]);
+      expect(
+        yield* flavor.applyModelSelection!({
+          runtime: { getConfigOptions: Effect.succeed([]) } as never,
+          startResult: {} as never,
+          modelSelection: { instanceId: "openclaw" as never, model: "openai/original" },
+        }),
+      ).toBeUndefined();
+    }),
+  );
+  it("keeps a labeled current model when the catalog does not include it", () => {
+    expect(
+      buildOpenClawModelsFromConfigOptions([
+        {
+          id: "model",
+          name: "Model",
+          type: "select",
+          category: "model",
+          currentValue: "openai/pinned",
+          options: [{ value: "google/other", name: "Other" }],
+        },
+      ]).map((m) => [m.slug, m.name, m.isDefault]),
+    ).toEqual([
+      ["google/other", "Other", undefined],
+      ["openai/pinned", "openai/pinned", true],
+    ]);
+  });
+  it.effect("sets all T3 access modes through permission_mode, not ACP thinking modes", () =>
+    Effect.gen(function* () {
+      const calls: unknown[] = [];
+      let currentValue = "read-only";
+      const runtime = {
+        getConfigOptions: Effect.sync(() => [
+          { id: "permission_mode", type: "select", currentValue },
+        ]),
+        setConfigOption: (id: string, value: string) =>
+          Effect.sync(() => {
+            calls.push([id, value]);
+            currentValue = value;
+            return { configOptions: [] };
+          }),
+      } as never;
+      const flavor = makeOpenClawAcpAdapterFlavor({ settings: {} } as never);
+      for (const runtimeMode of [
+        "approval-required",
+        "auto",
+        "full-access",
+        "auto-accept-edits",
+      ] as const) {
+        yield* flavor.applyRuntimePolicy!({
+          runtime,
+          policy: { runtimeMode, interactionMode: "default", cwd: "/repo" },
+        });
+      }
+      expect(calls).toEqual([
+        ["permission_mode", "guarded"],
+        ["permission_mode", "workspace"],
+        ["permission_mode", "full"],
+        ["permission_mode", "guarded"],
+      ]);
+      yield* flavor.applyRuntimePolicy!({
+        runtime: { getConfigOptions: Effect.succeed([]) } as never,
+        policy: { runtimeMode: "auto", interactionMode: "default", cwd: "/repo" },
+      });
+      expect(flavor.sessionModeForPolicy).toBeUndefined();
+      expect(
+        flavor.permissionDisposition!(
+          { runtimeMode: "auto", interactionMode: "default", cwd: "/repo" },
+          {} as never,
+        ),
+      ).toBe("ask");
+    }),
+  );
+  it.each(["started", "progress", "completed"] as const)(
+    "projects %s child metadata even after the spawn tool completed",
+    (event) => {
+      const flavor = makeOpenClawAcpAdapterFlavor({ settings: {} } as never);
+      expect(
+        flavor.extractSubagentUpdate!({
+          toolCallId: "spawn",
+          kind: "other",
+          status: "completed",
+          title: "sessions_spawn",
+          data: {
+            meta: {
+              openclaw: {
+                subagent: {
+                  id: "agent:main:subagent:child",
+                  parentId: "agent:main:subagent:parent",
+                  event,
+                  goal: "Check things",
+                  model: "openai/sol",
+                  status: "stopped",
+                  summary: "Done",
+                },
+              },
+            },
+          },
+        }),
+      ).toMatchObject({
+        nativeTaskId: "agent:main:subagent:child",
+        childSessionId: "agent:main:subagent:child",
+        parentSessionId: "agent:main:subagent:parent",
+        prompt: "Check things",
+        title: "Check things",
+        model: "openai/sol",
+        status: event === "completed" ? "cancelled" : "running",
+        result: event === "completed" ? "Done" : null,
+      });
+    },
+  );
+  it("rejects unrelated child metadata and maps terminal outcomes with bounded summaries", () => {
+    const extract = makeOpenClawAcpAdapterFlavor({ settings: {} } as never).extractSubagentUpdate!;
+    expect(extract(call("sessions_spawn"))).toBeUndefined();
+    for (const [status, expected] of [
+      ["completed", "completed"],
+      ["failed", "failed"],
+    ]) {
+      const result = extract({
+        ...call("sessions_spawn"),
+        data: {
+          meta: {
+            openclaw: {
+              subagent: {
+                id: "child",
+                event: "completed",
+                parentId: null,
+                model: null,
+                goal: "x",
+                status,
+                summary: "r".repeat(21000),
+              },
+            },
+          },
+        },
+      });
+      expect(result?.status).toBe(expected);
+      expect(result?.result?.length).toBe(20000);
+      expect(result?.parentSessionId).toBeNull();
+    }
+  });
   it("spawns the configured bridge without banners or notes", () => {
     expect(
       buildOpenClawAcpSpawnInput({ binaryPath: "/bin/openclaw" }, "/repo", {

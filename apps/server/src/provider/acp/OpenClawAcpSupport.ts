@@ -1,4 +1,8 @@
-import { type OpenClawSettings, type ServerProviderModel } from "@t3tools/contracts";
+import {
+  type OpenClawSettings,
+  type RuntimeMode,
+  type ServerProviderModel,
+} from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import * as Effect from "effect/Effect";
 import * as Crypto from "effect/Crypto";
@@ -29,26 +33,67 @@ export function buildOpenClawAcpSpawnInput(
 export function buildOpenClawModelsFromConfigOptions(
   options: ReadonlyArray<AcpSchema.SessionConfigOption> | null | undefined,
 ): ReadonlyArray<ServerProviderModel> {
-  const modelOption = options?.find(
-    (option) => option.category === "model" && option.type === "select",
-  );
+  const modelOption =
+    options?.find((option) => option.id === "model" && option.type === "select") ??
+    options?.find((option) => option.category === "model" && option.type === "select");
   if (!modelOption || modelOption.type !== "select") return [];
   const seen = new Set<string>();
-  return modelOption.options
-    .flatMap((option) => ("groupId" in option ? option.options : [option]))
-    .flatMap((option) => {
-      if (seen.has(option.value)) return [];
-      seen.add(option.value);
-      return [
-        {
-          slug: option.value,
-          name: option.name,
-          isCustom: false,
-          ...(option.value === modelOption.currentValue ? { isDefault: true } : {}),
-          capabilities: OPENCLAW_MODEL_CAPABILITIES,
-        },
-      ];
-    });
+  const choices = modelOption.options.flatMap((option) =>
+    "groupId" in option ? option.options : [option],
+  );
+  if (
+    modelOption.currentValue &&
+    !choices.some((option) => option.value === modelOption.currentValue)
+  ) {
+    choices.push({ value: modelOption.currentValue, name: modelOption.currentValue });
+  }
+  return choices.flatMap((option) => {
+    if (seen.has(option.value)) return [];
+    seen.add(option.value);
+    return [
+      {
+        slug: option.value,
+        name: option.name,
+        isCustom: false,
+        ...(option.value === modelOption.currentValue ? { isDefault: true } : {}),
+        capabilities: OPENCLAW_MODEL_CAPABILITIES,
+      },
+    ];
+  });
+}
+
+export function resolveOpenClawPermissionMode(mode: RuntimeMode): string {
+  switch (mode) {
+    case "full-access":
+      return "full";
+    case "auto":
+      return "workspace";
+    default:
+      return "guarded";
+  }
+}
+
+/** Read live config state so A -> B -> A switches and loaded sessions stay accurate. */
+export function applyOpenClawAcpModelSelection(input: {
+  readonly runtime: Pick<
+    AcpSessionRuntime.AcpSessionRuntime["Service"],
+    "getConfigOptions" | "setConfigOption"
+  >;
+  readonly requestedModelId: string;
+}): Effect.Effect<string | undefined, AcpErrors.AcpError> {
+  return Effect.gen(function* () {
+    const options = yield* input.runtime.getConfigOptions;
+    const model = options.find((option) => option.id === "model" && option.type === "select");
+    if (model?.type !== "select") return undefined;
+    if (
+      [OPENCLAW_DEFAULT_MODEL_SLUG, "default", "auto", ""].includes(input.requestedModelId) ||
+      model.currentValue === input.requestedModelId
+    ) {
+      return model.currentValue;
+    }
+    yield* input.runtime.setConfigOption(model.id, input.requestedModelId);
+    return input.requestedModelId;
+  });
 }
 
 export function makeOpenClawAcpRuntime(

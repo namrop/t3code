@@ -1,5 +1,6 @@
 import type { OrchestrationV2TurnItem, ToolActivitySurface } from "@t3tools/contracts";
 import type { AcpToolCallState } from "../../provider/acp/AcpRuntimeModel.ts";
+import type { AcpAdapterV2SubagentUpdate } from "./AcpAdapterV2.ts";
 type OpenClawToolKind =
   | "dynamic_tool_call"
   | "command_execution"
@@ -188,6 +189,33 @@ export function normalizeOpenClawToolCall(tool: AcpToolCallState): AcpToolCallSt
     data: { ...tool.data, rawInput, openclawToolName: name },
   };
 }
+/** Spawn tool settlement is separate from the child's lifecycle. */
+export function extractOpenClawSubagentUpdate(
+  tool: AcpToolCallState,
+): AcpAdapterV2SubagentUpdate | undefined {
+  const child = asRecord(openclawMeta(tool)?.subagent);
+  const id = text(child?.id);
+  if (!id || !["started", "progress", "completed"].includes(String(child?.event))) return undefined;
+  const terminal = child?.event === "completed";
+  const goal = text(child?.goal) ?? "Delegated task";
+  return {
+    nativeTaskId: id,
+    childSessionId: id,
+    parentSessionId: text(child?.parentId) ?? null,
+    prompt: goal.slice(0, 5000),
+    title: goal.split("\n")[0]!.slice(0, 120),
+    model: text(child?.model) ?? null,
+    status: !terminal
+      ? "running"
+      : child?.status === "stopped"
+        ? "cancelled"
+        : child?.status === "failed"
+          ? "failed"
+          : "completed",
+    result: terminal ? (text(child?.summary)?.slice(0, 20000) ?? null) : null,
+  };
+}
+
 export function projectOpenClawToolCall(
   tool: AcpToolCallState,
   item: OrchestrationV2TurnItem,
