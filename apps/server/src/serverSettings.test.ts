@@ -1284,6 +1284,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
             enabled: false,
           },
           hermes: DEFAULT_SERVER_SETTINGS.providers.hermes,
+          openclaw: DEFAULT_SERVER_SETTINGS.providers.openclaw,
           opencode: {
             enabled: false,
             serverUrl: "http://127.0.0.1:4096",

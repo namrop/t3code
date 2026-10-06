@@ -222,17 +222,23 @@ export function applyProviderInstanceMutation(
   const providerInstances = { ...settings.providerInstances };
   if (mutation.operation === "upsert" || mutation.operation === "create") {
     providerInstances[mutation.instanceId] = mutation.instance;
-    if (mutation.instanceId === "hermes" && mutation.instance.driver === "hermes") {
-      // Do not reset providers.hermes to defaults when the v2 instance form
-      // saves. Retain a schema-readable Hermes block for the old build.
+    const legacySlot =
+      mutation.instanceId === "hermes" && mutation.instance.driver === "hermes"
+        ? "hermes"
+        : mutation.instanceId === "openclaw" && mutation.instance.driver === "openclaw"
+          ? "openclaw"
+          : undefined;
+    if (legacySlot !== undefined) {
+      // Retain the default driver's schema-readable settings block when the
+      // v2 instance form saves. Named instances do not replace this block.
       const config = mutation.instance.config;
       return {
         ...settings,
         providerInstances,
         providers: {
           ...settings.providers,
-          hermes: {
-            ...settings.providers.hermes,
+          [legacySlot]: {
+            ...settings.providers[legacySlot],
             ...(config !== null && typeof config === "object" && !Array.isArray(config)
               ? config
               : {}),
@@ -524,6 +530,7 @@ const PERSISTED_SERVER_SETTINGS_DEFAULTS = {
     // Both builds share this block. Keep its full legacy shape, even when
     // disabled or reset, rather than writing only the v2 instance envelope.
     hermes: undefined,
+    openclaw: undefined,
   },
 };
 
