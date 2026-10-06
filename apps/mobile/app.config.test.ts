@@ -18,4 +18,8 @@ it("isolates the Sol APK even when ambient cloud settings are present", async ()
   expect(config.extra?.clerk.publishableKey).toBeNull();
   expect(config.extra?.relay.url).toBeNull();
   expect(config.extra?.eas).toBeUndefined();
+  const imagePicker = config.plugins?.find(
+    (plugin) => Array.isArray(plugin) && plugin[0] === "expo-image-picker",
+  );
+  expect(Array.isArray(imagePicker) && typeof imagePicker[1].microphonePermission).toBe("string");
 });
