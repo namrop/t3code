@@ -68,6 +68,22 @@ check the package/permissions with `aapt2 dump badging` before sharing it.
   `voice_note_transcript` output appears as a readable transcript, fetching
   withheld historical output when necessary. Audio attachments play inline.
 
+## October 6 release verification
+
+The rebuilt APK and local `REPORT.md`, `INSTALL.md`, tests, build receipts and
+screenshots are kept in the ignored `.t3/apk/` directory. APK SHA-256:
+`b436f0bfc1b05e2120a9b5e33514e6b6538c77b85ec4dbffc391c2b50f670d17`.
+Its installed emulator bytes matched the delivered release file.
+
+The Android recording-start fix preserves the native permission request across
+its temporary Activity pause, without weakening cancellation during a real
+recording. The emulator verified recording, OpenClaw upload, transcript display,
+and inline playback timing/pause. **It did not prove real speech:** the emulator
+supplied silence despite test-audio injection, and the returned transcript did
+not match the test speech. Correct speech recognition and audible playback still
+need a human-authorized phone smoke test. No phone or live-server changes were
+made. See the local report for evidence and limitations.
+
 ## Pairing and deployment boundary
 
 The server must use this fork's **orchestration protocol v2** build before this
