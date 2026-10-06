@@ -15,6 +15,25 @@ import {
 } from "./OpenClawAcp.ts";
 import type { AcpToolCallState } from "../../provider/acp/AcpRuntimeModel.ts";
 describe("OpenClaw ACP compatibility", () => {
+  it("discovers bridge choices exactly, representing clear as the provider Default", () => {
+    const models = buildOpenClawModelsFromConfigOptions([
+      {
+        id: "model",
+        name: "Model",
+        category: "model",
+        type: "select",
+        currentValue: "kimi/k3",
+        options: [
+          { value: "default", name: "Default" },
+          { value: "kimi/k3", name: "K3" },
+        ],
+      },
+    ]);
+    expect(models.map((model) => [model.slug, model.isDefault])).toEqual([
+      ["openclaw-default", true],
+      ["kimi/k3", undefined],
+    ]);
+  });
   it("advertises in-session model, access and native subagent support", () => {
     const flavor = makeOpenClawAcpAdapterFlavor({ settings: {} } as never);
     expect(flavor.capabilities.sessions.supportsModelSwitchInSession).toBe(true);
@@ -32,7 +51,7 @@ describe("OpenClaw ACP compatibility", () => {
         setConfigOption: (id: string, value: string) =>
           Effect.sync(() => {
             calls.push([id, value]);
-            currentValue = value;
+            currentValue = value === "default" ? "openai/original" : value;
             return { configOptions: [] };
           }),
       } as never;
@@ -47,9 +66,14 @@ describe("OpenClaw ACP compatibility", () => {
       yield* apply("openai/original");
       yield* apply("openrouter/anthropic/other");
       yield* apply("openai/original");
+      yield* apply("openrouter/anthropic/other");
+      expect(yield* apply("openclaw-default")).toBe("openai/original");
       expect(calls).toEqual([
+        ["model", "default"],
         ["model", "openrouter/anthropic/other"],
         ["model", "openai/original"],
+        ["model", "openrouter/anthropic/other"],
+        ["model", "default"],
       ]);
       expect(
         yield* flavor.applyModelSelection!({

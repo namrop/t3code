@@ -49,15 +49,20 @@ export function buildOpenClawModelsFromConfigOptions(
   ) {
     choices.push({ value: modelOption.currentValue, name: modelOption.currentValue });
   }
+  const hasClearChoice = choices.some((option) => option.value === "default");
   return choices.flatMap((option) => {
     if (seen.has(option.value)) return [];
     seen.add(option.value);
     return [
       {
-        slug: option.value,
+        slug: option.value === "default" ? OPENCLAW_DEFAULT_MODEL_SLUG : option.value,
         name: option.name,
         isCustom: false,
-        ...(option.value === modelOption.currentValue ? { isDefault: true } : {}),
+        ...((
+          hasClearChoice ? option.value === "default" : option.value === modelOption.currentValue
+        )
+          ? { isDefault: true }
+          : {}),
         capabilities: OPENCLAW_MODEL_CAPABILITIES,
       },
     ];
@@ -87,14 +92,19 @@ export function applyOpenClawAcpModelSelection(input: {
     const options = yield* input.runtime.getConfigOptions;
     const model = options.find((option) => option.id === "model" && option.type === "select");
     if (model?.type !== "select") return undefined;
-    if (
-      [OPENCLAW_DEFAULT_MODEL_SLUG, "default", "auto", ""].includes(input.requestedModelId) ||
-      model.currentValue === input.requestedModelId
-    ) {
-      return model.currentValue;
-    }
-    yield* input.runtime.setConfigOption(model.id, input.requestedModelId);
-    return input.requestedModelId;
+    const requested = [OPENCLAW_DEFAULT_MODEL_SLUG, "default", "auto", ""].includes(
+      input.requestedModelId,
+    )
+      ? "default"
+      : input.requestedModelId;
+    // Effective currentValue is not evidence that the session override is clear.
+    if (requested !== "default" && model.currentValue === requested) return model.currentValue;
+    yield* input.runtime.setConfigOption(model.id, requested);
+    const refreshed = yield* input.runtime.getConfigOptions;
+    const effective = refreshed.find(
+      (option) => option.id === model.id && option.type === "select",
+    );
+    return effective?.type === "select" ? effective.currentValue : undefined;
   });
 }
 

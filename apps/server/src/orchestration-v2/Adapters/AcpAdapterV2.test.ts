@@ -830,6 +830,119 @@ describe("AcpAdapterV2", () => {
       }).pipe(Effect.provide(testLayer), Effect.scoped),
   );
 
+  it.effect.each(["openclaw", "hermes"] as const)(
+    "%s model rejection is a visible warning, not a failed turn",
+    (driver) =>
+      Effect.gen(function* () {
+        const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const mockAgentPath = yield* path.fromFileUrl(
+          new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+        );
+        const instanceId = ProviderInstanceId.make(driver);
+        const threadId = ThreadId.make(`thread-${driver}-rejected-model`);
+        const rejected: string[] = [];
+        const reject = (model: string) =>
+          Effect.sync(() => {
+            rejected.push(model);
+          }).pipe(
+            Effect.andThen(
+              Effect.fail(
+                new EffectAcpErrors.AcpRequestError({
+                  code: -32602,
+                  errorMessage: "Gateway refused custom model",
+                }),
+              ),
+            ),
+          );
+        const options = {
+          crypto: yield* Crypto.Crypto,
+          instanceId,
+          fileSystem: fs,
+          idAllocator: yield* IdAllocator.IdAllocatorV2,
+          serverConfig: yield* ServerConfig.ServerConfig,
+          selfInvocation: yield* resolveSelfInvocation(),
+          settings: DEFAULT_OPENCLAW_SETTINGS,
+          environment: {},
+          childProcessSpawner: spawner,
+          makeRuntime: makeMockRuntime({
+            childProcessSpawner: spawner,
+            mockAgentPath,
+            wrapRuntime: (runtime) => ({
+              ...runtime,
+              getConfigOptions: Effect.succeed([
+                {
+                  id: "model",
+                  name: "Model",
+                  category: "model",
+                  type: "select" as const,
+                  currentValue: "openai/current",
+                  options: [{ value: "openai/current", name: "Current" }],
+                },
+              ]),
+              setConfigOption: (id, value) =>
+                id === "model"
+                  ? reject(String(value))
+                  : id === "mode"
+                    ? Effect.succeed({ configOptions: [] })
+                    : runtime.setConfigOption(id, value),
+              setMode: () => Effect.succeed({}),
+              setSessionModel: (model) => reject(model),
+            }),
+          }),
+        };
+        const adapter =
+          driver === "openclaw"
+            ? makeOpenClawAdapterV2(options)
+            : makeHermesAdapterV2({ ...options, settings: {} as never });
+        const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "auto",
+          interactionMode: "default",
+          cwd: process.cwd(),
+        });
+        const modelSelection = { instanceId, model: "custom:unlisted" };
+        const runtime = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make(`session-${driver}-reject`),
+          modelSelection,
+          runtimePolicy,
+        });
+        const providerThread = yield* runtime.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+        });
+        yield* runtime.startTurn({
+          ...makeTurnInput({
+            threadId,
+            providerThread,
+            instanceId,
+            runtimePolicy,
+            now: yield* DateTime.now,
+          }),
+          modelSelection,
+        });
+        const collected = yield* runtime.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runCollect,
+        );
+        assert.deepEqual(rejected, ["custom:unlisted"]);
+        assert.isTrue(
+          collected.some(
+            (event) =>
+              event.type === "turn_item.updated" &&
+              event.turnItem.type === "notification" &&
+              event.turnItem.summary.includes("Model selection warning") &&
+              event.turnItem.detail?.includes("custom:unlisted"),
+          ),
+        );
+        assert.isTrue(
+          collected.some((event) => event.type === "turn.terminal" && event.status === "completed"),
+        );
+      }).pipe(Effect.provide(testLayer), Effect.scoped),
+  );
+
   it.effect("OpenClaw applies model and access config on open and same-session turns", () =>
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -1060,6 +1173,18 @@ describe("AcpAdapterV2", () => {
           }),
         );
         yield* Deferred.await(settled);
+        yield* handler!({
+          sessionId: "mock-session-1",
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "nested-spawn",
+            title: "sessions_spawn",
+            kind: "other",
+            status: "in_progress",
+            rawInput: { task: "Nested check" },
+            _meta: { openclaw: { toolName: "sessions_spawn", subagentId: "child" } },
+          },
+        });
         for (const [id, parentId, event, status, model, toolStatus] of [
           ["child", null, "progress", undefined, "openai/sol", undefined],
           ["child", null, "progress", undefined, "openai/sol", undefined],
@@ -1068,7 +1193,7 @@ describe("AcpAdapterV2", () => {
           // A changed spawn status must still project, even with unchanged child metadata.
           ["child", null, "progress", undefined, "openai/other", "failed"],
           ["child", null, "progress", undefined, "openai/other", "failed"],
-          ["nested", "child", "started", undefined, "openai/sol", undefined],
+          ["nested", "child", "started", undefined, "openai/sol", "completed"],
           ["child", null, "completed", "completed", "openai/other", undefined],
           ["nested", "child", "completed", "failed", "openai/sol", undefined],
         ] as const) {
@@ -1081,6 +1206,7 @@ describe("AcpAdapterV2", () => {
               _meta: {
                 openclaw: {
                   toolName: "sessions_spawn",
+                  ...(parentId ? { subagentId: parentId } : {}),
                   subagent: {
                     id,
                     parentId,
@@ -1135,6 +1261,21 @@ describe("AcpAdapterV2", () => {
         assert.isDefined(child);
         assert.isDefined(nested);
         assert.equal(nested?.parentNodeId, child?.id);
+        const nestedRows = collected.flatMap((e) =>
+          e.type === "turn_item.updated" && e.turnItem.nativeItemRef?.nativeId === "nested-spawn"
+            ? [e.turnItem]
+            : [],
+        );
+        assert.isAtLeast(nestedRows.length, 2);
+        assert.isTrue(nestedRows.every((row) => row.threadId === child?.childThreadId));
+        const nestedLifecycleRows = collected.flatMap((e) =>
+          e.type === "turn_item.updated" &&
+          e.turnItem.type === "subagent" &&
+          e.turnItem.subagentId === nested?.id
+            ? [e.turnItem]
+            : [],
+        );
+        assert.isTrue(nestedLifecycleRows.every((row) => row.threadId === child?.childThreadId));
         assert.equal(child?.result, "child done");
         assert.equal(nested?.result, "nested done");
         const spawnRows = collected.flatMap((e) =>

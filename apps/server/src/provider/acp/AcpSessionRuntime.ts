@@ -1958,6 +1958,9 @@ export const make = (
             },
           });
         }
+        // Model catalogs are discovery hints, not an authority for custom or
+        // stale refs. The agent/gateway owns acceptance; tuning selects stay strict.
+        if (configOption.category === "model") return;
         const allowedValues = collectSessionConfigOptionValues(configOption);
         if (allowedValues.includes(value)) {
           return;

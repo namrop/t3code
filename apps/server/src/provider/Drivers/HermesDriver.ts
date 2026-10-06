@@ -233,6 +233,12 @@ export const HermesDriver: ProviderDriver<HermesSettings, HermesDriverEnv> = {
           selfInvocation,
           childProcessSpawner: spawner,
           onSessionStarted,
+          defaultModel: Ref.get(snapshotRef).pipe(
+            Effect.map((snapshot) => {
+              const model = snapshot.models.find((candidate) => candidate.isDefault)?.slug;
+              return model === HERMES_DEFAULT_MODEL_SLUG ? undefined : model;
+            }),
+          ),
           nativeLogging: (threadId) =>
             makeNativeLogger({ nativeEventLogger: loggers.native, provider: DRIVER, threadId }),
         }),

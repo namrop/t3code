@@ -15,6 +15,35 @@ import { makeHermesAcpAdapterFlavor } from "./HermesAdapterV2.ts";
 import type { AcpToolCallState } from "../../provider/acp/AcpRuntimeModel.ts";
 
 describe("Hermes ACP compatibility", () => {
+  it.effect("Default restores fresh discovery rather than a loaded session override", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      let defaultModel = "anthropic:configured";
+      const runtime = {
+        setSessionModel: (id: string) =>
+          Effect.sync(() => {
+            calls.push(id);
+            return {};
+          }),
+      } as never;
+      const flavor = makeHermesAcpAdapterFlavor({
+        defaultModel: Effect.sync(() => defaultModel),
+      } as never);
+      const apply = (model: string) =>
+        flavor.applyModelSelection!({
+          runtime,
+          startResult: {
+            sessionSetupResult: { models: { currentModelId: "openai:loaded-override" } },
+          } as never,
+          modelSelection: { instanceId: "hermes" as never, model },
+        });
+      expect(yield* apply("hermes-agent")).toBe("anthropic:configured");
+      yield* apply("custom:unlisted");
+      defaultModel = "anthropic:new-default";
+      expect(yield* apply("hermes-agent")).toBe("anthropic:new-default");
+      expect(calls).toEqual(["anthropic:configured", "custom:unlisted", "anthropic:new-default"]);
+    }),
+  );
   it.effect("switches back to the original model after an in-session switch", () =>
     Effect.gen(function* () {
       const calls: string[] = [];
@@ -79,41 +108,40 @@ describe("Hermes ACP compatibility", () => {
     ]);
   });
 });
-it.effect(
-  "switches legacy models with session/set_model, but skips the default alias and unchanged model",
-  () =>
-    Effect.gen(function* () {
-      const calls: string[] = [];
-      const runtime = {
-        setSessionModel: (model: string) =>
-          Effect.sync(() => {
-            calls.push(model);
-            return {};
-          }),
-      };
-      expect(
-        yield* applyHermesAcpModelSelection({
-          runtime,
-          currentModelId: "A",
-          requestedModelId: "hermes-agent",
+it.effect("switches legacy models with session/set_model and resolves Default from discovery", () =>
+  Effect.gen(function* () {
+    const calls: string[] = [];
+    const runtime = {
+      setSessionModel: (model: string) =>
+        Effect.sync(() => {
+          calls.push(model);
+          return {};
         }),
-      ).toBe("A");
-      expect(
-        yield* applyHermesAcpModelSelection({
-          runtime,
-          currentModelId: "A",
-          requestedModelId: "A",
-        }),
-      ).toBe("A");
-      expect(
-        yield* applyHermesAcpModelSelection({
-          runtime,
-          currentModelId: "A",
-          requestedModelId: "B",
-        }),
-      ).toBe("B");
-      expect(calls).toEqual(["B"]);
-    }),
+    };
+    expect(
+      yield* applyHermesAcpModelSelection({
+        runtime,
+        currentModelId: "A",
+        requestedModelId: "hermes-agent",
+        defaultModelId: "A",
+      }),
+    ).toBe("A");
+    expect(
+      yield* applyHermesAcpModelSelection({
+        runtime,
+        currentModelId: "A",
+        requestedModelId: "A",
+      }),
+    ).toBe("A");
+    expect(
+      yield* applyHermesAcpModelSelection({
+        runtime,
+        currentModelId: "A",
+        requestedModelId: "B",
+      }),
+    ).toBe("B");
+    expect(calls).toEqual(["B"]);
+  }),
 );
 const tool = (
   hermes: Record<string, unknown>,

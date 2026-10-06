@@ -11,7 +11,7 @@ import * as Crypto from "effect/Crypto";
 import type * as Scope from "effect/Scope";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import type * as AcpSchema from "effect-acp/compat";
-import type * as AcpErrors from "effect-acp/errors";
+import * as AcpErrors from "effect-acp/errors";
 import * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
 
 export const HERMES_DEFAULT_MODEL_SLUG = "hermes-agent";
@@ -76,10 +76,22 @@ export function applyHermesAcpModelSelection(input: {
   readonly runtime: Pick<AcpSessionRuntime.AcpSessionRuntime["Service"], "setSessionModel">;
   readonly currentModelId: string | undefined;
   readonly requestedModelId: string | undefined;
+  readonly defaultModelId?: string;
 }): Effect.Effect<string | undefined, AcpErrors.AcpError> {
-  const requested =
-    input.requestedModelId === HERMES_DEFAULT_MODEL_SLUG ? undefined : input.requestedModelId;
-  return requested === undefined || requested === input.currentModelId
+  const isDefault =
+    input.requestedModelId === undefined ||
+    [HERMES_DEFAULT_MODEL_SLUG, "default", "auto", ""].includes(input.requestedModelId);
+  const requested = isDefault ? input.defaultModelId : input.requestedModelId;
+  if (requested === undefined) {
+    return Effect.fail(
+      new AcpErrors.AcpRequestError({
+        code: -32602,
+        errorMessage:
+          "Hermes configured default model has not been discovered; keeping the session's current model.",
+      }),
+    );
+  }
+  return requested === input.currentModelId
     ? Effect.succeed(input.currentModelId)
     : input.runtime.setSessionModel(requested).pipe(Effect.as(requested));
 }

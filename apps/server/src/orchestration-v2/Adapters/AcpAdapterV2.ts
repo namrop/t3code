@@ -1711,6 +1711,7 @@ export function makeAcpAdapterV2(
         const activeSessionSetup =
           yield* Ref.make<AcpSessionRuntime.AcpSessionRuntimeStartResult | null>(null);
         const activeSelection = yield* Ref.make<ModelSelection | null>(null);
+        const modelWarningsBySession = new Map<string, string[]>();
         const activeInteractionMode = yield* Ref.make<ProviderInteractionMode | null>(null);
         const promptInstructionStates = yield* Ref.make(new Map<string, T3AcpInstructionState>());
         const runtimeRestartRequired = yield* Ref.make(false);
@@ -2969,7 +2970,10 @@ export function makeAcpAdapterV2(
             driver,
             turnItem: {
               id: turnItemId,
-              threadId: context.input.threadId,
+              threadId:
+                driver === "openclaw" && parentSubagent
+                  ? parentSubagent.childThreadId
+                  : context.input.threadId,
               runId: subagent.task.runId,
               nodeId,
               providerThreadId: context.input.providerThread.id,
@@ -3266,6 +3270,18 @@ export function makeAcpAdapterV2(
                 return;
             }
           }
+          const invokingChildId =
+            driver === "openclaw"
+              ? unknownRecord(unknownRecord(toolCall.data.meta)?.openclaw)?.subagentId
+              : undefined;
+          const invokingChild =
+            typeof invokingChildId === "string"
+              ? context.subagentsBySessionId.get(invokingChildId)
+              : undefined;
+          const toolThreadId = invokingChild?.childThreadId ?? context.input.threadId;
+          const toolRootNodeId = invokingChild?.childRootNodeId ?? context.input.rootNodeId;
+          const toolProviderThreadId =
+            invokingChild?.task.providerThreadId ?? context.input.providerThread.id;
           const status = projectedStatus ?? toolStatus(toolCall.status);
           const now = yield* DateTime.now;
           const nativeItemId = `${context.nativeThreadId}:tool:${toolCall.toolCallId}`;
@@ -3286,10 +3302,10 @@ export function makeAcpAdapterV2(
             driver,
             node: {
               id: nodeId,
-              threadId: context.input.threadId,
+              threadId: toolThreadId,
               runId: context.input.runId,
-              parentNodeId: context.input.rootNodeId,
-              rootNodeId: context.input.rootNodeId,
+              parentNodeId: toolRootNodeId,
+              rootNodeId: toolRootNodeId,
               kind: "tool_call",
               status: nodeStatus(status),
               countsForRun: true,
@@ -3305,10 +3321,10 @@ export function makeAcpAdapterV2(
 
           const base = {
             id: turnItemId,
-            threadId: context.input.threadId,
+            threadId: toolThreadId,
             runId: context.input.runId,
             nodeId,
-            providerThreadId: context.input.providerThread.id,
+            providerThreadId: toolProviderThreadId,
             providerTurnId: context.providerTurnId,
             nativeItemRef,
             parentItemId: null,
@@ -6309,11 +6325,33 @@ export function makeAcpAdapterV2(
           const requestedModel = flavor.resolveModelId?.(modelSelection) ?? modelSelection.model;
           let appliedModel: string | undefined;
           if (flavor.applyModelSelection !== undefined) {
-            appliedModel = yield* flavor.applyModelSelection({
-              runtime,
-              startResult,
-              modelSelection,
-            });
+            appliedModel = yield* flavor
+              .applyModelSelection({
+                runtime,
+                startResult,
+                modelSelection,
+              })
+              .pipe(
+                Effect.catchTags({
+                  AcpRequestError: (error) => {
+                    if (driver !== "openclaw" && driver !== "hermes") return Effect.fail(error);
+                    const detail = `Requested model ${requestedModel} was refused: ${error.message}. Continuing on the session's current model.`;
+                    return Effect.logWarning("ACP session rejected a model selection", {
+                      driver,
+                      detail,
+                    }).pipe(
+                      Effect.andThen(
+                        Effect.sync(() => {
+                          const warnings = modelWarningsBySession.get(startResult.sessionId) ?? [];
+                          warnings.push(detail);
+                          modelWarningsBySession.set(startResult.sessionId, warnings);
+                          return undefined;
+                        }),
+                      ),
+                    );
+                  },
+                }),
+              );
           } else if (
             requestedModel.length > 0 &&
             requestedModel !== "auto" &&
@@ -7161,6 +7199,37 @@ export function makeAcpAdapterV2(
               createdAt: startedAt,
               updatedAt: startedAt,
             });
+            for (const [index, detail] of (
+              modelWarningsBySession.get(requestedSessionId) ?? []
+            ).entries()) {
+              const nativeItemId = `${nativeTurnId}:model-warning:${index}`;
+              yield* emitProviderEvent({
+                type: "turn_item.updated",
+                driver,
+                turnItem: {
+                  id: providerTurnItemId(nativeItemId),
+                  threadId: turnInput.threadId,
+                  runId: turnInput.runId,
+                  nodeId: turnInput.rootNodeId,
+                  providerThreadId: turnInput.providerThread.id,
+                  providerTurnId,
+                  nativeItemRef: { driver, nativeId: nativeItemId, strength: "weak" },
+                  parentItemId: null,
+                  ordinal: yield* resolveItemOrdinal(context, nativeItemId),
+                  status: "completed",
+                  title: "Model selection warning",
+                  startedAt,
+                  completedAt: startedAt,
+                  updatedAt: startedAt,
+                  type: "notification",
+                  source: { kind: "background_task" },
+                  outcome: "updated",
+                  summary: "Model selection warning",
+                  detail,
+                },
+              });
+            }
+            modelWarningsBySession.delete(requestedSessionId);
             // Every attach ends the deferred-terminal contract, but only the
             // queued provider continuation owns wake traffic. A user turn may
             // start before that continuation and must leave its buffer intact.

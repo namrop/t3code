@@ -40,6 +40,8 @@ export interface HermesAdapterV2Options {
   readonly selfInvocation: SelfInvocation;
   readonly serverConfig: ServerConfig["Service"];
   readonly makeRuntime?: AcpAdapterV2Flavor["makeRuntime"];
+  /** Fresh provider discovery, not the loaded session current model. */
+  readonly defaultModel?: Effect.Effect<string | undefined>;
   readonly onSessionStarted?: (
     result: AcpSessionRuntime.AcpSessionRuntimeStartResult,
   ) => Effect.Effect<void>;
@@ -79,14 +81,18 @@ export function makeHermesAcpAdapterFlavor(options: HermesAdapterV2Options): Acp
           })),
         )),
     applyModelSelection: ({ runtime, startResult, modelSelection }) =>
-      applyHermesAcpModelSelection({
-        runtime,
-        currentModelId:
-          currentModels.get(runtime) ??
-          startResult.sessionSetupResult.models?.currentModelId ??
-          undefined,
-        requestedModelId: resolveHermesAcpBaseModelId(modelSelection.model),
-      }).pipe(
+      (options.defaultModel ?? Effect.void).pipe(
+        Effect.flatMap((defaultModelId) =>
+          applyHermesAcpModelSelection({
+            runtime,
+            currentModelId:
+              currentModels.get(runtime) ??
+              startResult.sessionSetupResult.models?.currentModelId ??
+              undefined,
+            requestedModelId: resolveHermesAcpBaseModelId(modelSelection.model),
+            ...(defaultModelId === undefined ? {} : { defaultModelId }),
+          }),
+        ),
         Effect.tap((selected) =>
           Effect.sync(() => {
             if (selected !== undefined) currentModels.set(runtime, selected);
