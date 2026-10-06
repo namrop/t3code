@@ -128,14 +128,16 @@ export const OpenClawDriver: ProviderDriver<OpenClawSettings, OpenClawDriverEnv>
           Effect.andThen(PubSub.publish(changes, snapshot)),
           Effect.asVoid,
         );
-      const onSessionStarted = (started: AcpSessionRuntimeStartResult) =>
+      const onSessionStarted = (started: AcpSessionRuntimeStartResult, discovery = false) =>
         Effect.gen(function* () {
           const current = yield* Ref.get(snapshotRef);
           const now = yield* Clock.currentTimeMillis;
-          const models = buildOpenClawModelsFromConfigOptions(
-            started.sessionSetupResult.configOptions,
-          );
-          lastSuccessfulProbe = now;
+          // Only a fresh discovery session reports the configured agent default.
+          // A loaded thread may have its own model pin, which is not a provider default.
+          const models = discovery
+            ? buildOpenClawModelsFromConfigOptions(started.sessionSetupResult.configOptions)
+            : [];
+          if (discovery) lastSuccessfulProbe = now;
           yield* publish({
             ...current,
             installed: true,
@@ -146,11 +148,13 @@ export const OpenClawDriver: ProviderDriver<OpenClawSettings, OpenClawDriverEnv>
             message: undefined,
             supportsAudioPrompts:
               started.initializeResult.agentCapabilities?.promptCapabilities?.audio === true,
-            models: providerModelsFromSettings(
-              models.length ? models : FALLBACK_MODELS,
-              settings.customModels,
-              OPENCLAW_MODEL_CAPABILITIES,
-            ),
+            models: discovery
+              ? providerModelsFromSettings(
+                  models.length ? models : FALLBACK_MODELS,
+                  settings.customModels,
+                  OPENCLAW_MODEL_CAPABILITIES,
+                )
+              : current.models,
           });
         });
       const refresh = Effect.gen(function* () {
@@ -170,7 +174,7 @@ export const OpenClawDriver: ProviderDriver<OpenClawSettings, OpenClawDriverEnv>
             mcpServers: [],
           });
           const started = yield* runtime.start();
-          yield* onSessionStarted(started);
+          yield* onSessionStarted(started, true);
         }).pipe(
           Effect.provideService(Crypto.Crypto, crypto),
           Effect.scoped,

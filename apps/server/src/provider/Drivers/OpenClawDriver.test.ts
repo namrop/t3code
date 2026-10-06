@@ -1,6 +1,11 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
-import { ProviderInstanceId, defaultInstanceIdForDriver } from "@t3tools/contracts";
+import {
+  ProviderInstanceId,
+  ProviderSessionId,
+  ThreadId,
+  defaultInstanceIdForDriver,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -39,7 +44,7 @@ describe("OpenClawDriver", () => {
     });
   });
   it.effect(
-    "discovers model-category config options and negotiated audio once",
+    "discovers configured models once and keeps the default when reopening a pinned thread",
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -57,59 +62,70 @@ describe("OpenClawDriver", () => {
           `#!/bin/sh\nexec '${process.execPath}' --experimental-strip-types '${mockAgent}' "$@"\n`,
         );
         yield* fs.chmod(binaryPath, 0o700);
+        const transcript = (model: string, method: "session/new" | "session/load") => ({
+          provider: "openclaw",
+          protocol: "acp.ndjson-jsonrpc",
+          version: "1",
+          scenario: "openclaw-model-discovery",
+          entries: [
+            {
+              type: "expect_outbound",
+              frame: { kind: "request", method: "initialize", params: "<any>" },
+            },
+            {
+              type: "emit_inbound",
+              frame: {
+                kind: "response",
+                method: "initialize",
+                result: {
+                  protocolVersion: 1,
+                  agentCapabilities: {
+                    loadSession: true,
+                    promptCapabilities: { image: true, audio: true },
+                  },
+                  authMethods: [],
+                },
+              },
+            },
+            {
+              type: "expect_outbound",
+              frame: { kind: "request", method, params: "<any>" },
+            },
+            {
+              type: "emit_inbound",
+              frame: {
+                kind: "response",
+                method,
+                result: {
+                  sessionId: "openclaw-fixture",
+                  configOptions: [
+                    {
+                      id: "model",
+                      category: "model",
+                      type: "select",
+                      name: "Model",
+                      currentValue: model,
+                      options: [
+                        { value: "anthropic/fixture", name: "Fixture" },
+                        { value: "openai/resumed", name: "Resumed" },
+                      ],
+                    },
+                    {
+                      id: "permission_mode",
+                      type: "select",
+                      name: "Access",
+                      currentValue: "full",
+                      options: [{ value: "full", name: "Full" }],
+                    },
+                  ],
+                },
+              },
+            },
+          ],
+        });
         yield* fs.writeFileString(
           transcriptPath,
-          yield* encodeJson({
-            provider: "openclaw",
-            protocol: "acp.ndjson-jsonrpc",
-            version: "1",
-            scenario: "openclaw-model-discovery",
-            entries: [
-              {
-                type: "expect_outbound",
-                frame: { kind: "request", method: "initialize", params: "<any>" },
-              },
-              {
-                type: "emit_inbound",
-                frame: {
-                  kind: "response",
-                  method: "initialize",
-                  result: {
-                    protocolVersion: 1,
-                    agentCapabilities: {
-                      loadSession: true,
-                      promptCapabilities: { image: true, audio: true },
-                    },
-                    authMethods: [],
-                  },
-                },
-              },
-              {
-                type: "expect_outbound",
-                frame: { kind: "request", method: "session/new", params: "<any>" },
-              },
-              {
-                type: "emit_inbound",
-                frame: {
-                  kind: "response",
-                  method: "session/new",
-                  result: {
-                    sessionId: "openclaw-fixture",
-                    configOptions: [
-                      {
-                        id: "model",
-                        category: "model",
-                        type: "select",
-                        name: "Model",
-                        currentValue: "anthropic/fixture",
-                        options: [{ value: "anthropic/fixture", name: "Fixture" }],
-                      },
-                    ],
-                  },
-                },
-              },
-            ],
-          }),
+          yield* encodeJson(transcript("anthropic/fixture", "session/new")),
         );
         const instance = yield* OpenClawDriver.create({
           instanceId: ProviderInstanceId.make("openclaw"),
@@ -146,6 +162,32 @@ describe("OpenClawDriver", () => {
         );
         yield* instance.snapshot.refresh;
         expect((yield* instance.snapshot.getSnapshot).models).toEqual(snapshot.models);
+        yield* fs.writeFileString(
+          transcriptPath,
+          yield* encodeJson(transcript("openai/resumed", "session/load")),
+        );
+        yield* instance.orchestrationAdapter.openSession({
+          threadId: ThreadId.make("thread-openclaw-resumed"),
+          providerSessionId: ProviderSessionId.make("session-openclaw-resumed"),
+          initialNativeThreadId: "openclaw-fixture",
+          modelSelection: { instanceId: instance.instanceId, model: "openai/resumed" },
+          runtimePolicy: {
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            cwd: directory,
+          },
+        });
+        expect(
+          (yield* instance.snapshot.getSnapshot).models
+            .filter((m) => m.isDefault)
+            .map((m) => m.slug),
+        ).toEqual(["anthropic/fixture"]);
+        yield* instance.snapshot.refresh;
+        expect(
+          (yield* instance.snapshot.getSnapshot).models
+            .filter((m) => m.isDefault)
+            .map((m) => m.slug),
+        ).toEqual(["anthropic/fixture"]);
       }).pipe(Effect.provide(testLayer), Effect.scoped),
     { timeout: 30_000 },
   );
