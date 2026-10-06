@@ -3,8 +3,8 @@ let
   pkgs = import <nixpkgs> { config.allowUnfree = true; config.android_sdk.accept_license = true; };
   android = pkgs.androidenv.composeAndroidPackages {
     # RN 0.88 compiles with 37.0 but targets 36 (Android 16).
-    platformVersions = [ "37.0" ];
-    buildToolsVersions = [ "37.0.0" ];
+    platformVersions = [ "36" "37.0" ];
+    buildToolsVersions = [ "36.0.0" "37.0.0" ];
     includeEmulator = false;
     includeSystemImages = false;
     includeNDK = true;
