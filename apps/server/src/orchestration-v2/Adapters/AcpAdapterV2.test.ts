@@ -985,6 +985,17 @@ describe("AcpAdapterV2", () => {
                       toolCallId: "spawn",
                       title: "sessions_spawn",
                       kind: "other",
+                      status: "in_progress",
+                      _meta: { openclaw: { toolName: "sessions_spawn" } },
+                    },
+                  });
+                  yield* handler!({
+                    sessionId: "mock-session-1",
+                    update: {
+                      sessionUpdate: "tool_call",
+                      toolCallId: "spawn",
+                      title: "sessions_spawn",
+                      kind: "other",
                       status: "completed",
                       _meta: {
                         openclaw: {
@@ -1094,6 +1105,16 @@ describe("AcpAdapterV2", () => {
         assert.equal(nested?.parentNodeId, child?.id);
         assert.equal(child?.result, "child done");
         assert.equal(nested?.result, "nested done");
+        const spawnRows = collected.flatMap((e) =>
+          e.type === "turn_item.updated" && e.turnItem.nativeItemRef?.nativeId === "spawn"
+            ? [e.turnItem]
+            : [],
+        );
+        assert.equal(
+          spawnRows.at(-1)?.status,
+          "completed",
+          "the original spawning tool must not stay running after it becomes a subagent",
+        );
       }).pipe(Effect.provide(testLayer), Effect.scoped),
   );
 

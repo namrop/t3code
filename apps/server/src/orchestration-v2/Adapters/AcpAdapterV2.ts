@@ -3237,7 +3237,16 @@ export function makeAcpAdapterV2(
             yield* emitSubagent(context, subagentUpdate);
             if (subagentUpdate.suppressNormalTool !== false) {
               yield* rearmDeferredFinalize(context);
-              return;
+              // Some agents only identify the child in the spawn tool's result.
+              // Settle a normal row already projected at start before suppressing
+              // lifecycle-only tools; otherwise that row stays running forever.
+              const status = toolStatus(toolCall.status);
+              if (
+                !context.toolStartedAt.has(toolCall.toolCallId) ||
+                status === "pending" ||
+                status === "running"
+              )
+                return;
             }
           }
           const status = projectedStatus ?? toolStatus(toolCall.status);
