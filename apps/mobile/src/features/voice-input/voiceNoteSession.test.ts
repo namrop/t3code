@@ -78,6 +78,36 @@ describe("native voice notes", () => {
     expect(calls).toEqual(["prepare", "record", "stop", "delete", "release"]);
     expect(session.phase).toBe("idle");
   });
+  it("survives Android's temporary permission activity pause", async () => {
+    const calls: string[] = [];
+    let session!: VoiceNoteSession;
+    session = new VoiceNoteSession({
+      requestPermission: async () => {
+        await session.onAppBackground();
+        return true;
+      },
+      prepare: async () => {
+        calls.push("prepare");
+      },
+      record: () => {
+        calls.push("record");
+      },
+      stop: async () => "file:///note.m4a",
+      release: async () => {},
+      deleteRecording: async () => {},
+      onChange: () => {},
+    });
+    await session.start();
+    expect(session.phase).toBe("recording");
+    expect(calls).toEqual(["prepare", "record"]);
+  });
+  it("still cancels a recording when the app really backgrounds", async () => {
+    const { session, calls } = setup();
+    await session.start();
+    await session.onAppBackground();
+    expect(session.phase).toBe("idle");
+    expect(calls).toEqual(["prepare", "record", "stop", "delete", "release"]);
+  });
   it("cancellation during permission cannot start recording later", async () => {
     let grant!: (value: boolean) => void;
     let prepared = false;

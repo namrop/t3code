@@ -83,7 +83,7 @@ export function ComposerVoiceNote(props: {
   }, [busy, props.onBusyChange]);
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (next) => {
-      if (next === "background") void session.cancel();
+      if (next === "background") void session.onAppBackground();
     });
     return () => {
       subscription.remove();

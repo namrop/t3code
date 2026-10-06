@@ -42,7 +42,9 @@ export APP_VARIANT=sol T3CODE_MOBILE_UPDATES_ENABLED=0 EXPO_NO_DOTENV=1 CI=1
 export T3_RELEASE_STORE_FILE=/home/luis/.local/share/pharos-keys/t3-android/t3-sol-release.p12
 export T3_RELEASE_PASSWORD_FILE=/home/luis/.local/share/pharos-keys/t3-android/password
 cd android
-./gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a,x86_64
+./gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a,x86_64 \
+  -Pandroid.enableMinifyInReleaseBuilds=false \
+  -Pandroid.enableShrinkResourcesInReleaseBuilds=false --max-workers=6
 ```
 
 Dual ABI permits testing the same signed release on an x86_64 emulator and
