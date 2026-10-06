@@ -99,6 +99,8 @@ import {
  * provider headers remain user-collapsible.
  */
 const PRIMARY_PROVIDER_DRIVERS: ReadonlySet<string> = new Set([
+  "hermes",
+  "openclaw",
   "claudeAgent",
   "codex",
   "antigravity",

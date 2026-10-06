@@ -13,6 +13,29 @@ import {
 } from "./modelOptions";
 
 describe("mobile model options", () => {
+  it.each(["hermes", "openclaw"])("keeps %s catalog routing and access choices", (driver) => {
+    const config = {
+      providers: [
+        {
+          instanceId: `${driver}-sol`,
+          driver,
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          supportedRuntimeModes: ["auto", "supervised"],
+          models: [{ slug: "cheap/model", name: "Cheap model", capabilities: null }],
+        },
+      ],
+    } as unknown as ServerConfig;
+    expect(buildModelOptions(config, null)).toMatchObject([
+      {
+        providerLabel: driver === "hermes" ? "Hermes" : "OpenClaw",
+        providerDriver: driver,
+        supportedRuntimeModes: ["auto", "supervised"],
+        selection: { instanceId: `${driver}-sol`, model: "cheap/model" },
+      },
+    ]);
+  });
   it("groups models by provider and flags legacy entries", () => {
     const config = {
       providers: [

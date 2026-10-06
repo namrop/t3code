@@ -68,6 +68,19 @@ export function ProviderIcon(props: ProviderIconProps) {
   const size = props.size ?? 16;
   const mono = isDarkMode ? "#e5e5e5" : "#171717";
 
+  if (props.provider === "hermes" || props.provider === "openclaw") {
+    return (
+      <View
+        accessibilityLabel={props.provider === "hermes" ? "Hermes" : "OpenClaw"}
+        style={{ width: size, height: size, alignItems: "center", justifyContent: "center" }}
+      >
+        <Text style={{ fontSize: size * 0.85, fontWeight: "700", color: mono }}>
+          {props.provider === "hermes" ? "H" : "OC"}
+        </Text>
+      </View>
+    );
+  }
+
   if (props.provider?.trim().toLowerCase() === "antigravity") {
     return (
       <Image
