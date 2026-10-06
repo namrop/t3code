@@ -12,6 +12,7 @@ import type { ServerConfig } from "../../config.ts";
 import type { IdAllocatorV2 } from "../IdAllocator.ts";
 import {
   applyOpenClawAcpModelSelection,
+  OPENCLAW_ACCESS_MODE_WARNING,
   makeOpenClawAcpRuntime,
   resolveOpenClawPermissionMode,
 } from "../../provider/acp/OpenClawAcpSupport.ts";
@@ -48,6 +49,7 @@ export interface OpenClawAdapterV2Options {
 export function makeOpenClawAcpAdapterFlavor(
   options: OpenClawAdapterV2Options,
 ): AcpAdapterV2Flavor {
+  const warnedAccessRuntimes = new WeakSet<AcpSessionRuntime.AcpSessionRuntime["Service"]>();
   return {
     driver: ProviderDriverKind.make("openclaw"),
     runtimeHarness: "OpenClaw",
@@ -93,6 +95,13 @@ export function makeOpenClawAcpAdapterFlavor(
         const access = options.find(
           (option) => option.id === "permission_mode" && option.type === "select",
         );
+        if (access === undefined) {
+          if (!warnedAccessRuntimes.has(runtime)) {
+            warnedAccessRuntimes.add(runtime);
+            yield* Effect.logWarning(OPENCLAW_ACCESS_MODE_WARNING);
+          }
+          return;
+        }
         const value = resolveOpenClawPermissionMode(policy.runtimeMode);
         if (access?.type === "select" && access.currentValue !== value) {
           yield* runtime.setConfigOption(access.id, value);

@@ -13,6 +13,8 @@ import type * as AcpErrors from "effect-acp/errors";
 import * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
 
 export const OPENCLAW_DEFAULT_MODEL_SLUG = "openclaw-default";
+export const OPENCLAW_ACCESS_MODE_WARNING =
+  "OpenClaw bridge does not offer permission_mode; T3 access modes are unavailable with this bridge. OpenClaw's configured default access applies. Use a bridge that supports permission_mode (for example openclaw-t3acp).";
 export const OPENCLAW_MODEL_CAPABILITIES = createModelCapabilities({ optionDescriptors: [] });
 
 export function buildOpenClawAcpSpawnInput(

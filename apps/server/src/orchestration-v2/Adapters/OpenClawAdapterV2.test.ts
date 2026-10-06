@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Logger from "effect/Logger";
 
 import {
   buildOpenClawAcpSpawnInput,
@@ -109,10 +110,6 @@ describe("OpenClaw ACP compatibility", () => {
         ["permission_mode", "full"],
         ["permission_mode", "guarded"],
       ]);
-      yield* flavor.applyRuntimePolicy!({
-        runtime: { getConfigOptions: Effect.succeed([]) } as never,
-        policy: { runtimeMode: "auto", interactionMode: "default", cwd: "/repo" },
-      });
       expect(flavor.sessionModeForPolicy).toBeUndefined();
       expect(
         flavor.permissionDisposition!(
@@ -122,6 +119,35 @@ describe("OpenClaw ACP compatibility", () => {
       ).toBe("ask");
     }),
   );
+  it.effect("warns once per session without rejecting unsupported access modes", () => {
+    const warnings: unknown[] = [];
+    const logger = Logger.make(({ message, logLevel }) => {
+      if (logLevel === "Warn") warnings.push(message);
+    });
+    return Effect.gen(function* () {
+      const flavor = makeOpenClawAcpAdapterFlavor({ settings: {} } as never);
+      const runtime = { getConfigOptions: Effect.succeed([]) } as never;
+      for (const runtimeMode of [
+        "approval-required",
+        "auto-accept-edits",
+        "auto",
+        "full-access",
+      ] as const) {
+        yield* flavor.applyRuntimePolicy!({
+          runtime,
+          policy: { runtimeMode, interactionMode: "default", cwd: "/repo" },
+        });
+      }
+      expect(warnings).toHaveLength(1);
+      expect(String(warnings[0])).toContain("permission_mode");
+      expect(String(warnings[0])).toContain("T3 access modes are unavailable");
+      yield* flavor.applyRuntimePolicy!({
+        runtime: { getConfigOptions: Effect.succeed([]) } as never,
+        policy: { runtimeMode: "approval-required", interactionMode: "default", cwd: "/repo" },
+      });
+      expect(warnings).toHaveLength(2);
+    }).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
+  });
   it.each(["started", "progress", "completed"] as const)(
     "projects %s child metadata even after the spawn tool completed",
     (event) => {

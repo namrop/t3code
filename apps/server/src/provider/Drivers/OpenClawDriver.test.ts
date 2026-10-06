@@ -13,6 +13,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
+import * as TestClock from "effect/testing/TestClock";
 import * as ServerConfig from "../../config.ts";
 import * as IdAllocator from "../../orchestration-v2/IdAllocator.ts";
 import * as ProviderEventLoggers from "../Layers/ProviderEventLoggers.ts";
@@ -43,9 +44,9 @@ describe("OpenClawDriver", () => {
       customModels: [],
     });
   });
-  it.effect(
-    "discovers configured models once and keeps the default when reopening a pinned thread",
-    () =>
+  it.effect.each([true, false])(
+    "discovers configured models with access support %s and keeps the default when reopening a pinned thread",
+    (accessSupported) =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
@@ -110,13 +111,17 @@ describe("OpenClawDriver", () => {
                         { value: "openai/resumed", name: "Resumed" },
                       ],
                     },
-                    {
-                      id: "permission_mode",
-                      type: "select",
-                      name: "Access",
-                      currentValue: "full",
-                      options: [{ value: "full", name: "Full" }],
-                    },
+                    ...(accessSupported
+                      ? [
+                          {
+                            id: "permission_mode",
+                            type: "select",
+                            name: "Access",
+                            currentValue: "full",
+                            options: [{ value: "full", name: "Full" }],
+                          },
+                        ]
+                      : []),
                   ],
                 },
               },
@@ -127,6 +132,8 @@ describe("OpenClawDriver", () => {
           transcriptPath,
           yield* encodeJson(transcript("anthropic/fixture", "session/new")),
         );
+        // The discovery cache uses zero as its never-probed sentinel.
+        yield* TestClock.adjust("1 millis");
         const instance = yield* OpenClawDriver.create({
           instanceId: ProviderInstanceId.make("openclaw"),
           displayName: "OpenClaw fixture",
@@ -152,10 +159,11 @@ describe("OpenClawDriver", () => {
         expect(snapshot).toMatchObject({
           driver: "openclaw",
           instanceId: "openclaw",
-          status: "ready",
+          status: accessSupported ? "ready" : "warning",
           displayName: "OpenClaw fixture",
           supportsAudioPrompts: true,
         });
+        if (!accessSupported) expect(snapshot.message).toContain("T3 access modes are unavailable");
         expect(snapshot.models.map((m) => m.slug)).toContain("anthropic/fixture");
         expect(snapshot.models).toContainEqual(
           expect.objectContaining({ slug: "custom:fixture", isCustom: true }),
@@ -183,11 +191,13 @@ describe("OpenClawDriver", () => {
             .map((m) => m.slug),
         ).toEqual(["anthropic/fixture"]);
         yield* instance.snapshot.refresh;
-        expect(
-          (yield* instance.snapshot.getSnapshot).models
-            .filter((m) => m.isDefault)
-            .map((m) => m.slug),
-        ).toEqual(["anthropic/fixture"]);
+        const resumedSnapshot = yield* instance.snapshot.getSnapshot;
+        expect(resumedSnapshot.models.filter((m) => m.isDefault).map((m) => m.slug)).toEqual([
+          "anthropic/fixture",
+        ]);
+        expect(resumedSnapshot.status).toBe(accessSupported ? "ready" : "warning");
+        if (!accessSupported)
+          expect(resumedSnapshot.message).toContain("T3 access modes are unavailable");
       }).pipe(Effect.provide(testLayer), Effect.scoped),
     { timeout: 30_000 },
   );

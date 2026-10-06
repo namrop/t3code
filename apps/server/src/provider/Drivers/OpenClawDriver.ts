@@ -22,6 +22,7 @@ import * as IdAllocator from "../../orchestration-v2/IdAllocator.ts";
 import { makeOpenClawAdapterV2 } from "../../orchestration-v2/Adapters/OpenClawAdapterV2.ts";
 import {
   buildOpenClawModelsFromConfigOptions,
+  OPENCLAW_ACCESS_MODE_WARNING,
   OPENCLAW_DEFAULT_MODEL_SLUG,
   OPENCLAW_MODEL_CAPABILITIES,
   makeOpenClawAcpRuntime,
@@ -138,14 +139,18 @@ export const OpenClawDriver: ProviderDriver<OpenClawSettings, OpenClawDriverEnv>
             ? buildOpenClawModelsFromConfigOptions(started.sessionSetupResult.configOptions)
             : [];
           if (discovery) lastSuccessfulProbe = now;
+          const supportsAccessModes =
+            started.sessionSetupResult.configOptions?.some(
+              (option) => option.id === "permission_mode" && option.type === "select",
+            ) === true;
           yield* publish({
             ...current,
             installed: true,
             version: started.initializeResult.agentInfo?.version ?? current.version,
-            status: enabled ? "ready" : "disabled",
+            status: !enabled ? "disabled" : supportsAccessModes ? "ready" : "warning",
             auth: { status: "authenticated" },
             checkedAt: DateTime.formatIso(DateTime.makeUnsafe(now)),
-            message: undefined,
+            message: supportsAccessModes ? undefined : OPENCLAW_ACCESS_MODE_WARNING,
             supportsAudioPrompts:
               started.initializeResult.agentCapabilities?.promptCapabilities?.audio === true,
             models: discovery
