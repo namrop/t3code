@@ -360,3 +360,106 @@ it.effect("a client launches at its ceiling with the project's default model", (
     expect(launched).toHaveLength(1);
   }),
 );
+
+const threadCallerLaunchHarness = (input: {
+  readonly runtimeMode: "approval-required" | "auto-accept-edits" | "auto" | "full-access";
+  readonly interactionMode: "default" | "plan";
+  readonly launched: Array<ThreadLaunch.ThreadLaunchInput>;
+}) => {
+  const sourceThreadId = ThreadId.make("source-thread");
+  const projectId = ProjectId.make("project");
+  const providerInstanceId = ProviderInstanceId.make("hermes");
+  const modelSelection = { instanceId: providerInstanceId, model: "anthropic:claude-opus-5-5" };
+  const caller = {
+    id: sourceThreadId,
+    projectId,
+    providerInstanceId,
+    modelSelection,
+    runtimeMode: input.runtimeMode,
+    interactionMode: input.interactionMode,
+    activeRunId: "active-run",
+    archivedAt: null,
+    deletedAt: null,
+  } as OrchestrationV2ThreadShell;
+  const dependencies = Layer.mergeAll(
+    NodeCrypto.layer,
+    Layer.succeed(McpInvocationContext.McpInvocationContext, {
+      environmentId: EnvironmentId.make("environment"),
+      requestNamespace: "session",
+      thread: { threadId: sourceThreadId, providerSessionId: "session", providerInstanceId },
+      client: undefined,
+      issuedAt: 0,
+      capabilities: new Set(["orchestration" as const]),
+    }),
+    Layer.mock(ThreadManagement.ThreadManagementService)({
+      getThreadShell: () => Effect.succeed(caller),
+    }),
+    Layer.mock(ThreadLaunch.ThreadLaunchService)({
+      launch: (launch) => {
+        input.launched.push(launch);
+        return Effect.succeed({
+          threadId: launch.threadId,
+          projection: {
+            thread: { id: launch.threadId, projectId, modelSelection },
+            runs: [],
+          },
+          resumed: false,
+        } as unknown as ThreadLaunch.ThreadLaunchResult);
+      },
+    }),
+    Layer.mock(Project.ProjectService)({}),
+    Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),
+    NodeServices.layer,
+    ServerConfig.layerTest(process.cwd(), { prefix: "t3-thread-caller-launch-" }).pipe(
+      Layer.provide(NodeServices.layer),
+    ),
+  );
+  return { dependencies };
+};
+
+it.effect("a thread in auto launches a thread no broader than itself", () =>
+  Effect.gen(function* () {
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const { dependencies } = threadCallerLaunchHarness({
+      runtimeMode: "auto",
+      interactionMode: "default",
+      launched,
+    });
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(ProjectHandlersLive.pipe(Layer.provide(dependencies))),
+    );
+    const handle = (params: Parameters<typeof toolkit.handle<"t3_thread_launch">>[1]) =>
+      toolkit
+        .handle("t3_thread_launch", params)
+        .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+
+    const result = yield* handle({ title: "Audit", message: "Review the change" });
+    expect(result.at(-1)?.result).toMatchObject({ projectId: ProjectId.make("project") });
+    expect(launched[0]?.runtimeMode).toBe("auto");
+
+    const escalated = yield* handle({ title: "Audit", runtimeMode: "full-access" });
+    expect(escalated.at(-1)?.result).toMatchObject({ code: "runtime_mode_escalation_denied" });
+    expect(launched).toHaveLength(1);
+  }),
+);
+
+it.effect("a thread below auto, or in plan mode, cannot launch", () =>
+  Effect.gen(function* () {
+    for (const modes of [
+      { runtimeMode: "approval-required", interactionMode: "default" },
+      { runtimeMode: "auto-accept-edits", interactionMode: "default" },
+      { runtimeMode: "auto", interactionMode: "plan" },
+    ] as const) {
+      const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+      const { dependencies } = threadCallerLaunchHarness({ ...modes, launched });
+      const toolkit = yield* ProjectToolkit.pipe(
+        Effect.provide(ProjectHandlersLive.pipe(Layer.provide(dependencies))),
+      );
+      const result = yield* toolkit
+        .handle("t3_thread_launch", { title: "Audit" })
+        .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+      expect(result.at(-1)?.result).toMatchObject({ code: "capability_denied" });
+      expect(launched).toHaveLength(0);
+    }
+  }),
+);

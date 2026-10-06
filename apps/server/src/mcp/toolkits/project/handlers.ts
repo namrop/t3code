@@ -43,15 +43,17 @@ export const ProjectHandlersLive = ProjectToolkit.toLayer({
     Effect.gen(function* () {
       const context = yield* readMutationCaller();
       const { caller, limits } = context;
-      // A thread caller launches only as itself (full-access/default), as before. A client
-      // launches anything up to its ceiling.
+      // A thread caller in full-access or auto (default interaction mode) may launch;
+      // the new thread can be no broader than the caller (resolveRuntimeMode below).
+      // A client launches anything up to its ceiling.
       if (
         caller !== undefined &&
-        (caller.runtimeMode !== "full-access" || caller.interactionMode !== "default")
+        ((caller.runtimeMode !== "full-access" && caller.runtimeMode !== "auto") ||
+          caller.interactionMode !== "default")
       )
         return yield* new OrchestratorMcpFailure({
           code: "capability_denied",
-          message: "Project launches require a full-access/default calling thread.",
+          message: "Project launches require a full-access or auto calling thread in default mode.",
         });
       const runtimeMode = yield* resolveRuntimeMode(
         limits.runtimeMode,
