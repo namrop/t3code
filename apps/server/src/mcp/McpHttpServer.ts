@@ -62,7 +62,7 @@ import {
 const unauthorized = HttpServerResponse.jsonUnsafe(
   {
     error: "invalid_mcp_credential",
-    message: "A valid provider-scoped MCP bearer credential is required.",
+    message: "A valid provider-session or client MCP bearer credential is required.",
   },
   {
     status: 401,
