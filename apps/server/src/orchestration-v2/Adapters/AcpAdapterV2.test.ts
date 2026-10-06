@@ -1058,17 +1058,24 @@ describe("AcpAdapterV2", () => {
           }),
         );
         yield* Deferred.await(settled);
-        for (const [id, parentId, event, status] of [
-          ["child", null, "progress", undefined],
-          ["nested", "child", "started", undefined],
-          ["child", null, "completed", "completed"],
-          ["nested", "child", "completed", "failed"],
+        for (const [id, parentId, event, status, model, toolStatus] of [
+          ["child", null, "progress", undefined, "openai/sol", undefined],
+          ["child", null, "progress", undefined, "openai/sol", undefined],
+          ["child", null, "progress", undefined, "openai/other", undefined],
+          ["child", null, "progress", undefined, "openai/other", undefined],
+          // A changed spawn status must still project, even with unchanged child metadata.
+          ["child", null, "progress", undefined, "openai/other", "failed"],
+          ["child", null, "progress", undefined, "openai/other", "failed"],
+          ["nested", "child", "started", undefined, "openai/sol", undefined],
+          ["child", null, "completed", "completed", "openai/other", undefined],
+          ["nested", "child", "completed", "failed", "openai/sol", undefined],
         ] as const) {
           yield* handler!({
             sessionId: "mock-session-1",
             update: {
               sessionUpdate: "tool_call_update",
               toolCallId: id === "child" ? "spawn" : "nested-spawn",
+              ...(toolStatus ? { status: toolStatus } : {}),
               _meta: {
                 openclaw: {
                   toolName: "sessions_spawn",
@@ -1077,8 +1084,31 @@ describe("AcpAdapterV2", () => {
                     parentId,
                     event,
                     goal: "Check",
-                    model: "openai/sol",
+                    model,
                     ...(status ? { status, summary: `${id} done` } : {}),
+                  },
+                },
+              },
+            },
+          });
+        }
+        for (const summary of ["child revised", "child revised"]) {
+          yield* handler!({
+            sessionId: "mock-session-1",
+            update: {
+              sessionUpdate: "tool_call_update",
+              toolCallId: "spawn",
+              _meta: {
+                openclaw: {
+                  toolName: "sessions_spawn",
+                  subagent: {
+                    id: "child",
+                    parentId: null,
+                    event: "completed",
+                    status: "completed",
+                    goal: "Check",
+                    model: "openai/other",
+                    summary,
                   },
                 },
               },
@@ -1110,10 +1140,28 @@ describe("AcpAdapterV2", () => {
             ? [e.turnItem]
             : [],
         );
-        assert.equal(
-          spawnRows.at(-1)?.status,
-          "completed",
-          "the original spawning tool must not stay running after it becomes a subagent",
+        const childTasks = tasks.filter((t) => t.nativeTaskRef?.nativeId === "child");
+        assert.deepEqual(
+          childTasks.map((t) => [t.status, t.model, t.result]),
+          [
+            ["running", "openai/sol", null],
+            ["running", "openai/other", null],
+            ["completed", "openai/other", "child done"],
+            ["completed", "openai/other", "child revised"],
+          ],
+          "unchanged progress emits no child updates, but model and terminal changes do",
+        );
+        const childProjectionEvents = collected.filter(
+          (e) =>
+            (e.type === "node.updated" && e.node.nativeItemRef?.nativeId === "child") ||
+            (e.type === "turn_item.updated" && e.turnItem.nativeItemRef?.nativeId === "child") ||
+            (e.type === "subagent.updated" && e.subagent.nativeTaskRef?.nativeId === "child"),
+        );
+        assert.equal(childProjectionEvents.length, 16);
+        assert.deepEqual(
+          spawnRows.map((row) => row.status),
+          ["running", "completed", "failed"],
+          "the spawn row projects only when its status changes",
         );
       }).pipe(Effect.provide(testLayer), Effect.scoped),
   );

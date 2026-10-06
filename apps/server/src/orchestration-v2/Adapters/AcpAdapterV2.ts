@@ -2707,6 +2707,18 @@ export function makeAcpAdapterV2(
               ? context.subagentsBySessionId.get(update.childSessionId)
               : undefined);
           const updateIsTerminal = acpSubagentStatusIsTerminal(update.status);
+          // OpenClaw reports child activity for every gateway event, including
+          // reply deltas that leave the persisted lifecycle state unchanged.
+          if (
+            driver === "openclaw" &&
+            existing !== undefined &&
+            existing.task.status === update.status &&
+            existing.task.result === (update.result ?? existing.task.result) &&
+            existing.task.model === (update.model ?? existing.task.model) &&
+            (update.childSessionId === null || existing.childSessionId === update.childSessionId)
+          ) {
+            return;
+          }
           if (
             existing !== undefined &&
             acpSubagentStatusIsTerminal(existing.task.status) &&
@@ -2715,6 +2727,7 @@ export function makeAcpAdapterV2(
             return;
           }
           if (
+            driver !== "openclaw" &&
             existing !== undefined &&
             existing.task.status === update.status &&
             updateIsTerminal &&
@@ -2776,6 +2789,9 @@ export function makeAcpAdapterV2(
               startedAt: now,
             }),
             status: taskStatus,
+            ...(driver === "openclaw"
+              ? { model: update.model ?? existing?.task.model ?? null }
+              : {}),
             result: update.result ?? existing?.task.result ?? null,
             completedAt: acpSubagentStatusIsTerminal(taskStatus) ? now : null,
             updatedAt: now,
@@ -3244,7 +3260,8 @@ export function makeAcpAdapterV2(
               if (
                 !context.toolStartedAt.has(toolCall.toolCallId) ||
                 status === "pending" ||
-                status === "running"
+                status === "running" ||
+                (previous !== undefined && status === toolStatus(previous.status))
               )
                 return;
             }
