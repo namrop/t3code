@@ -94,6 +94,7 @@ import {
   type AcpAdapterV2SubagentUpdate,
 } from "./AcpAdapterV2.ts";
 
+import { acpTestProcessEnvironment } from "./AcpAdapterV2.testkit.ts";
 import { makeOpenClawAdapterV2, makeOpenClawAcpAdapterFlavor } from "./OpenClawAdapterV2.ts";
 import { makeHermesAdapterV2 } from "./HermesAdapterV2.ts";
 import { makeAcpRegistryAdapterV2 } from "./AcpRegistryAdapterV2.ts";
@@ -450,6 +451,7 @@ function makeMockRuntime(input: {
             args: [input.mockAgentPath],
             cwd: runtimeInput.cwd,
             env: {
+              ...acpTestProcessEnvironment(),
               T3_ACP_SESSION_LIFECYCLE: "1",
               ...(typeof input.environment === "function"
                 ? input.environment(runtimeOrdinal)
@@ -1567,7 +1569,11 @@ describe("AcpAdapterV2", () => {
       const adapter = makeAcpAdapterV2({
         instanceId,
         // Production Devin runs commands through client terminals.
-        clientTerminals: { childProcessSpawner, shellCommands: true },
+        clientTerminals: {
+          childProcessSpawner,
+          shellCommands: true,
+          environment: acpTestProcessEnvironment(),
+        },
         crypto: yield* Crypto.Crypto,
         fileSystem: yield* FileSystem.FileSystem,
         idAllocator,
@@ -2267,7 +2273,7 @@ describe("AcpAdapterV2", () => {
               "bash",
               commandPidPath,
             ],
-            { detached: true, stdio: "ignore" },
+            { detached: true, stdio: "ignore", env: acpTestProcessEnvironment() },
           );
           fixture.unref();
           published = Option.getOrThrow(
@@ -2639,7 +2645,15 @@ describe("AcpAdapterV2", () => {
         idAllocator,
         serverConfig,
         selfInvocation,
-        clientTerminals: { childProcessSpawner },
+        clientTerminals: {
+          childProcessSpawner,
+          environment: acpTestProcessEnvironment({
+            ...process.env,
+            T3_ACP_MCP_AUTHORIZATION: "fixture-only",
+            T3_ACP_MCP_ENDPOINT: "http://fixture.invalid",
+            T3_ACP_MCP_FUTURE: "fixture-only",
+          }),
+        },
       });
       const sourceThreadId = ThreadId.make("thread-acp-native-fork-source");
       const targetThreadId = ThreadId.make("thread-acp-native-fork-target");
@@ -2751,7 +2765,10 @@ describe("AcpAdapterV2", () => {
         {
           sessionId: "mock-child-session-without-credential-scope",
           command: process.execPath,
-          args: ["-e", "process.stdout.write(process.env.T3_ACP_MCP_AUTHORIZATION ?? '')"],
+          args: [
+            "-e",
+            "process.stdout.write(Object.keys(process.env).some(key => key.startsWith('T3_ACP_MCP_')) ? 'ambient MCP environment present' : '')",
+          ],
         },
         { requestId: "test-unknown-terminal-create", method: "terminal/create" },
       );
@@ -2775,7 +2792,10 @@ describe("AcpAdapterV2", () => {
         {
           sessionId: "mock-session-1-fork",
           command: process.execPath,
-          args: ["-e", "process.stdout.write(process.env.T3_ACP_MCP_AUTHORIZATION ?? '')"],
+          args: [
+            "-e",
+            "process.stdout.write(process.env.T3_ACP_MCP_AUTHORIZATION === 'Bearer target-thread-token' ? 'target credential' : 'unexpected credential')",
+          ],
         },
         { requestId: "test-terminal-create", method: "terminal/create" },
       );
@@ -2793,7 +2813,7 @@ describe("AcpAdapterV2", () => {
         },
         { requestId: "test-terminal-output", method: "terminal/output" },
       );
-      assert.equal(terminalOutput.output, "Bearer target-thread-token");
+      assert.equal(terminalOutput.output, "target credential");
     }).pipe(Effect.provide(testLayer), Effect.scoped),
   );
 
@@ -2944,7 +2964,7 @@ describe("AcpAdapterV2", () => {
         idAllocator,
         serverConfig,
         selfInvocation,
-        clientTerminals: { childProcessSpawner },
+        clientTerminals: { childProcessSpawner, environment: acpTestProcessEnvironment() },
       });
       const threadId = ThreadId.make("thread-acp-unknown-permission-grant");
       const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({

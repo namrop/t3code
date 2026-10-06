@@ -17,6 +17,18 @@ import * as AcpSessionRuntime from "../../provider/acp/AcpSessionRuntime.ts";
 import type { ProviderReplayGate } from "../testkit/ProviderReplayGate.testkit.ts";
 import { ACP_PROTOCOL, type AcpAdapterV2RuntimeInput } from "./AcpAdapterV2.ts";
 
+export function acpTestProcessEnvironment(
+  environment: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  // Undefined overrides also clear inherited keys when a spawner extends its env.
+  return Object.fromEntries(
+    Object.entries(environment).map(([name, value]) => [
+      name,
+      name.startsWith("T3_ACP_MCP_") ? undefined : value,
+    ]),
+  );
+}
+
 export const AcpReplayTranscript = Schema.Struct({
   provider: ProviderDriverKind,
   protocol: Schema.Literal(ACP_PROTOCOL),
@@ -221,7 +233,7 @@ export function makeAcpReplayRuntime(input: {
             args: acpReplayAgentArgs(input.scriptPath),
             cwd: runtimeInput.cwd,
             env: {
-              ...process.env,
+              ...acpTestProcessEnvironment(),
               T3_ACP_REPLAY_TRANSCRIPT_PATH: transcriptPath,
               T3_ACP_REPLAY_STATUS_PATH: input.statusPath,
               T3_ACP_REPLAY_WORKSPACE: runtimeInput.cwd,
