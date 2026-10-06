@@ -7,6 +7,7 @@ import * as NetAddress from "effect/net/NetAddress";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
+import * as McpClientCredentials from "./McpClientCredentials.ts";
 
 const environmentId = EnvironmentId.make("environment-1");
 const makeFakeHttpServer = (hostname: string, port = 43123) =>
@@ -29,6 +30,15 @@ const makeRegistry = (now: () => number, httpServer = fakeHttpServer) =>
     .pipe(
       Effect.provideService(HttpServer.HttpServer, httpServer),
       Effect.provideService(ServerEnvironment.ServerEnvironment, fakeEnvironment),
+      Effect.provideService(
+        McpClientCredentials.McpClientCredentials,
+        McpClientCredentials.McpClientCredentials.of({
+          resolve: () => Effect.succeed(undefined),
+          issue: () => Effect.die("unused"),
+          list: Effect.die("unused"),
+          revoke: () => Effect.die("unused"),
+        }),
+      ),
       Effect.provide(NodeServices.layer),
     );
 
@@ -47,7 +57,7 @@ it.effect("stores only a token hash, resolves the bearer token, and revokes by t
     expect(token.length).toBeGreaterThan(20);
 
     const resolved = yield* registry.resolve(token);
-    expect(resolved?.thread.threadId).toBe(threadId);
+    expect(resolved?.thread?.threadId).toBe(threadId);
     expect(resolved?.capabilities).toEqual(
       new Set(["preview", "orchestration", "worktree", "pull-requests"]),
     );
@@ -158,7 +168,7 @@ it.effect("keeps a credential alive across turns that never touch an MCP tool", 
       yield* registry.touch(threadId);
     }
 
-    expect((yield* registry.resolve(token))?.thread.threadId).toBe(threadId);
+    expect((yield* registry.resolve(token))?.thread?.threadId).toBe(threadId);
   }),
 );
 

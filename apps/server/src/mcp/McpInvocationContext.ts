@@ -26,7 +26,7 @@ export interface McpThreadCaller {
   readonly providerInstanceId: ProviderInstanceId;
 }
 
-/** An agent T3 Code did not launch, signed in through MCP OAuth. */
+/** An agent T3 Code did not launch, authenticated with an MCP client credential. */
 export interface McpClientCaller {
   readonly sessionId: string;
   readonly label: string;

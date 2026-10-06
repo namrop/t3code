@@ -467,7 +467,7 @@ export const layerWithOptions = (
                   const rawToken = existing.authorizationHeader.replace(/^Bearer\s+/, "");
                   const resolved = yield* mcpSessionRegistry.resolve(rawToken);
                   if (
-                    resolved !== undefined &&
+                    resolved?.thread !== undefined &&
                     resolved.thread.threadId === threadId &&
                     resolved.thread.providerInstanceId === providerInstanceId &&
                     // A flipped browser-access setting must not survive through

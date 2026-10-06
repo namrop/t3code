@@ -36,6 +36,7 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as McpProviderSession from "../mcp/McpProviderSession.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
+import * as McpClientCredentials from "../mcp/McpClientCredentials.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
@@ -485,6 +486,9 @@ const TestMcpRegistryLayer = Layer.effect(
 ).pipe(
   Layer.provide(Layer.succeed(HttpServer.HttpServer, fakeHttpServer)),
   Layer.provide(Layer.succeed(ServerEnvironment.ServerEnvironment, fakeEnvironment)),
+  Layer.provide(
+    Layer.mock(McpClientCredentials.McpClientCredentials)({ resolve: () => Effect.undefined }),
+  ),
   Layer.provide(NodeServices.layer),
 );
 
@@ -1082,7 +1086,7 @@ it.effect(
         const token = captured?.authorizationHeader.replace(/^Bearer\s+/, "");
         assert.isDefined(token);
         const resolved = yield* registry.resolve(token!);
-        assert.equal(resolved?.thread.threadId, threadId);
+        assert.equal(resolved?.thread?.threadId, threadId);
         assert.deepEqual(
           resolved?.capabilities,
           new Set(["preview", "orchestration", "worktree", "pull-requests"]),
@@ -1317,7 +1321,7 @@ it.effect("ProviderSessionManagerV2 duplicate detach preserves replacement MCP c
         McpProviderSession.readMcpProviderSession(threadId)?.providerSessionId,
         replacement?.providerSessionId,
       );
-      assert.equal((yield* registry.resolve(replacementToken!))?.thread.threadId, threadId);
+      assert.equal((yield* registry.resolve(replacementToken!))?.thread?.threadId, threadId);
     });
 
     yield* effect.pipe(
@@ -1393,7 +1397,7 @@ it.effect(
           McpProviderSession.readMcpProviderSession(threadId)?.providerSessionId,
           replacement?.providerSessionId,
         );
-        assert.equal((yield* registry.resolve(replacementToken!))?.thread.threadId, threadId);
+        assert.equal((yield* registry.resolve(replacementToken!))?.thread?.threadId, threadId);
       });
 
       yield* effect.pipe(
@@ -1449,7 +1453,7 @@ it.effect(
         // process's MCP client keeps using the credential it was started with.
         yield* manager.detach({ providerSessionId, threadId, detail: "Workspace changed." });
         assert.equal(
-          (yield* registry.resolve(originalToken!))?.thread.threadId,
+          (yield* registry.resolve(originalToken!))?.thread?.threadId,
           threadId,
           "detach must not revoke the credential the live provider process still holds",
         );
@@ -1468,7 +1472,7 @@ it.effect(
           original?.providerSessionId,
           "re-attach must reuse the existing credential, not rotate it",
         );
-        assert.equal((yield* registry.resolve(originalToken!))?.thread.threadId, threadId);
+        assert.equal((yield* registry.resolve(originalToken!))?.thread?.threadId, threadId);
 
         // Releasing the session (provider process gone) still revokes.
         yield* manager.close(providerSessionId);
@@ -1592,7 +1596,7 @@ it.effect(
           "the credential the adapter was configured with must remain current",
         );
         assert.equal(
-          (yield* registry.resolve(originalToken!))?.thread.threadId,
+          (yield* registry.resolve(originalToken!))?.thread?.threadId,
           threadId,
           "the predecessor release must not revoke a credential reserved by an in-flight open",
         );

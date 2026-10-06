@@ -11,6 +11,7 @@ import * as NetAddress from "effect/net/NetAddress";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpProviderSession from "./McpProviderSession.ts";
+import * as McpClientCredentials from "./McpClientCredentials.ts";
 
 export interface McpCredentialRequest {
   readonly threadId: ThreadId;
@@ -32,7 +33,7 @@ export interface McpSessionRegistryShape {
   readonly issue: (request: McpCredentialRequest) => Effect.Effect<McpIssuedCredential>;
   readonly resolve: (
     rawToken: string,
-  ) => Effect.Effect<McpInvocationContext.McpThreadInvocationScope | undefined>;
+  ) => Effect.Effect<McpInvocationContext.McpInvocationScope | undefined>;
   /**
    * Records a sign of life for every credential bound to `threadId`. Provider
    * turns call this so that a session which is plainly alive keeps its
@@ -97,6 +98,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   options: McpSessionRegistryOptions = {},
 ) {
   const crypto = yield* Crypto.Crypto;
+  const clients = yield* McpClientCredentials.McpClientCredentials;
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const environmentId = yield* environment.getEnvironmentId;
   const httpServer = yield* HttpServer.HttpServer;
@@ -170,7 +172,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
       if (rawToken.length === 0) return undefined;
       const tokenHash = yield* hashToken(rawToken);
       const timestamp = yield* currentTimeMillis;
-      return yield* SynchronizedRef.modify(state, ({ records }) => {
+      const providerScope = yield* SynchronizedRef.modify(state, ({ records }) => {
         const current = pruneDead(records, timestamp);
         const record = current.get(tokenHash);
         if (!record) return [undefined, { records: current }] as const;
@@ -178,6 +180,26 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         next.set(tokenHash, { ...record, lastAliveAt: timestamp });
         return [record.scope, { records: next }] as const;
       });
+      if (providerScope) return providerScope;
+      const credential = yield* clients.resolve(rawToken).pipe(Effect.orDie);
+      if (!credential) return undefined;
+      return {
+        environmentId,
+        requestNamespace: `client:${credential.id}`,
+        thread: undefined,
+        client: {
+          sessionId: credential.id,
+          label: credential.label,
+          runtimeModeCeiling: credential.runtimeModeCeiling,
+        },
+        // Outside callers can read/orchestrate and manage PR links. Worktree handoff,
+        // preview and devices act as a calling thread, so they are not granted.
+        capabilities: new Set<McpInvocationContext.McpCapability>([
+          "orchestration",
+          "pull-requests",
+        ]),
+        issuedAt: credential.issuedAt,
+      };
     },
   );
 
@@ -236,7 +258,9 @@ const make = Effect.acquireRelease(
     }),
 );
 
-export const layer = Layer.effect(McpSessionRegistry, make);
+export const layer = Layer.effect(McpSessionRegistry, make).pipe(
+  Layer.provide(McpClientCredentials.layer),
+);
 
 export const issueActiveMcpCredential = (
   request: McpCredentialRequest,
