@@ -391,6 +391,28 @@ export const HermesIcon: Icon = (props) => (
   </svg>
 );
 
+export const OPENCLAW_LOGO_ASSET = {
+  href: "/providers/openclaw.png",
+  width: 180,
+  height: 180,
+  sha256: "e8c7ce0a3a6c52bd904cc55e31a5b3a8b6392dcd70ba9e220ecf0ef1d6bd8c16",
+} as const;
+
+export const OpenClawIcon: Icon = (props) => (
+  <svg
+    {...props}
+    viewBox={`0 0 ${OPENCLAW_LOGO_ASSET.width} ${OPENCLAW_LOGO_ASSET.height}`}
+    fill="none"
+  >
+    <image
+      href={OPENCLAW_LOGO_ASSET.href}
+      width={OPENCLAW_LOGO_ASSET.width}
+      height={OPENCLAW_LOGO_ASSET.height}
+      preserveAspectRatio="xMidYMid meet"
+    />
+  </svg>
+);
+
 export const TraeIcon: Icon = (props) => (
   <svg {...props} viewBox="0 0 24 24" fill="currentColor">
     {/* Back rectangle: left strip + bottom strip drawn separately — empty bottom-left corner is the gap between them */}

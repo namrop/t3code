@@ -6,6 +6,7 @@ import {
   CursorSettings,
   GrokSettings,
   HermesSettings,
+  OpenClawSettings,
   OpenCodeSettings,
   PiSettings,
   ProviderDriverKind,
@@ -86,6 +87,12 @@ const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = [
     value: ProviderDriverKind.make("antigravity"),
     label: "Antigravity",
     settingsSchema: AntigravitySettings,
+  },
+  {
+    value: ProviderDriverKind.make("openclaw"),
+    label: "OpenClaw",
+    settingsSchema: OpenClawSettings,
+    badgeLabel: "Experimental",
   },
   {
     value: ProviderDriverKind.make("hermes"),

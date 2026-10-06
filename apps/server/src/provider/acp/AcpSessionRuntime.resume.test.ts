@@ -32,18 +32,28 @@ const response = (method: string, result: unknown) => ({
 });
 
 describe("missing ACP sessions", () => {
-  it.effect.each([
-    ["load", "startup"],
-    ["load", "activation"],
-    ["load", "default-fail"],
-    ["load", "other-error"],
-    ["resume", "startup"],
-    ["resume", "activation"],
-    ["resume", "default-fail"],
-    ["resume", "other-error"],
-  ] as const)(
-    "%s %s: replaces only an opted-in -32002 session and retains MCP servers",
-    ([method, scenario]) =>
+  it.live.each(
+    (
+      [
+        ["load", "startup"],
+        ["load", "activation"],
+        ["load", "default-fail"],
+        ["load", "other-error"],
+        ["resume", "startup"],
+        ["resume", "activation"],
+        ["resume", "default-fail"],
+        ["resume", "other-error"],
+      ] as const
+    ).flatMap(
+      ([method, scenario]) =>
+        [
+          [method, scenario, false],
+          [method, scenario, true],
+        ] as const,
+    ),
+  )(
+    "%s %s metadata=%s: replaces only an opted-in -32002 session and retains MCP servers",
+    ([method, scenario, withMeta]) =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
@@ -56,7 +66,15 @@ describe("missing ACP sessions", () => {
         const activation = scenario === "activation";
         const recover = scenario === "startup" || activation;
         const code = scenario === "other-error" ? -32603 : -32002;
-        const setupPayload = { cwd: process.cwd(), mcpServers, additionalDirectories: [directory] };
+        const sessionRequestMeta = withMeta ? { sessionKey: "agent:main:t3:initial" } : undefined;
+        const activationMeta = withMeta ? { sessionKey: "agent:main:t3:target" } : undefined;
+        const meta = (value: typeof sessionRequestMeta) => (value ? { _meta: value } : {});
+        const setupPayload = {
+          cwd: process.cwd(),
+          mcpServers,
+          additionalDirectories: [directory],
+          ...meta(activation ? activationMeta : sessionRequestMeta),
+        };
         const entries = [
           request("initialize", "<any>"),
           response("initialize", {
@@ -66,13 +84,15 @@ describe("missing ACP sessions", () => {
           }),
           ...(activation
             ? [
-                request("session/new", setupPayload),
+                request("session/new", { ...setupPayload, ...meta(sessionRequestMeta) }),
                 response("session/new", { sessionId: "initial" }),
               ]
             : []),
           request(`session/${method}`, {
             sessionId: "gone",
-            ...(activation ? { cwd: process.cwd(), mcpServers } : setupPayload),
+            ...(activation
+              ? { cwd: process.cwd(), mcpServers, ...meta(activationMeta) }
+              : setupPayload),
           }),
           {
             type: "emit_inbound",
@@ -113,20 +133,25 @@ describe("missing ACP sessions", () => {
           cwd: process.cwd(),
           clientInfo: { name: "t3-hermes-test", version: "0.0.0" },
           mcpServers,
+          sessionRequestMeta,
           additionalDirectories: [directory],
           ...(activation ? {} : { resumeSessionId: "gone", resumeMethod: method }),
           ...(scenario === "default-fail" ? {} : { onResumeNotFound: "new-session" as const }),
         });
         const setup = activation
-          ? runtime
-              .start()
-              .pipe(
-                Effect.andThen(
-                  method === "load"
-                    ? runtime.loadSession("gone", { mcpServers })
-                    : runtime.resumeSession("gone", { mcpServers }),
-                ),
-              )
+          ? runtime.start().pipe(
+              Effect.andThen(
+                method === "load"
+                  ? runtime.loadSession("gone", {
+                      mcpServers,
+                      sessionRequestMeta: activationMeta,
+                    })
+                  : runtime.resumeSession("gone", {
+                      mcpServers,
+                      sessionRequestMeta: activationMeta,
+                    }),
+              ),
+            )
           : runtime.start();
         if (recover) {
           expect(yield* setup).toMatchObject({ sessionId: "replacement" });

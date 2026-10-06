@@ -143,6 +143,7 @@ export interface AcpAdapterV2RuntimeInput {
   readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
   readonly mcpServers: ReadonlyArray<EffectAcpSchema.McpServer>;
   readonly acpMcpServers?: ReadonlyArray<EffectAcpSchema.McpServer>;
+  readonly sessionRequestMeta?: AcpSessionRuntime.AcpSessionRuntimeOptions["sessionRequestMeta"];
   /** Scoped credentials for terminal fallback when an ACP agent drops `mcpServers`. */
   readonly processEnvironment?: NodeJS.ProcessEnv;
   readonly resumeSessionId?: string;
@@ -223,6 +224,11 @@ export interface AcpAdapterV2Flavor {
   readonly driver: ProviderDriverKind;
   readonly capabilities: OrchestrationV2ProviderCapabilities;
   readonly clientCapabilitiesMeta?: Record<string, boolean>;
+  /** Bridges such as OpenClaw reject all client-supplied MCP servers. */
+  readonly omitMcpServers?: boolean;
+  readonly sessionRequestMeta?: (
+    threadId: ThreadId | null,
+  ) => AcpSessionRuntime.AcpSessionRuntimeOptions["sessionRequestMeta"];
   readonly normalizeSessionUpdate?: (
     notification: EffectAcpSchema.SessionNotification,
   ) => EffectAcpSchema.SessionNotification;
@@ -651,6 +657,7 @@ export const AcpProviderCapabilitiesV2 = {
 function negotiatedCapabilities(
   base: OrchestrationV2ProviderCapabilities,
   started: AcpSessionRuntime.AcpSessionRuntimeStartResult,
+  omitMcpServers: boolean,
 ): OrchestrationV2ProviderCapabilities {
   const agent = started.initializeResult.agentCapabilities ?? {};
   const session = agent.sessionCapabilities;
@@ -676,7 +683,7 @@ function negotiatedCapabilities(
       ...base.tools,
       // The stdio bridge (`t3 acp-mcp-bridge`) makes the t3-code MCP toolkit
       // available regardless of the agent's optional http/sse MCP support.
-      supportsMcpTools: true,
+      supportsMcpTools: !omitMcpServers,
     },
     checkpointing: {
       ...base.checkpointing,
@@ -737,9 +744,19 @@ function acpMcpServers(
   return acpMcpContext(threadId, self).servers;
 }
 
-function acpMcpActivation(threadId: ThreadId | null, self: SelfInvocation) {
-  const context = acpMcpContext(threadId, self);
-  return { mcpServers: context.servers, acpMcpServers: context.acpServers };
+function acpMcpActivation(
+  threadId: ThreadId | null,
+  self: SelfInvocation,
+  flavor: AcpAdapterV2Flavor,
+) {
+  const context = flavor.omitMcpServers
+    ? { servers: [], acpServers: [] }
+    : acpMcpContext(threadId, self);
+  return {
+    mcpServers: context.servers,
+    acpMcpServers: context.acpServers,
+    sessionRequestMeta: flavor.sessionRequestMeta?.(threadId),
+  };
 }
 
 function nativeThreadId(
@@ -2084,8 +2101,11 @@ export function makeAcpAdapterV2(
           onTermination: AcpAdapterV2RuntimeInput["onTermination"] = () =>
             handleRuntimeTerminationAtGeneration(runtimeGeneration),
         ): AcpAdapterV2RuntimeInput => {
-          const mcpContext = acpMcpContext(threadId, self);
+          const mcpContext = flavor.omitMcpServers
+            ? { servers: [], acpServers: [], processEnvironment: undefined }
+            : acpMcpContext(threadId, self);
           return {
+            sessionRequestMeta: flavor.sessionRequestMeta?.(threadId),
             cwd: input.runtimePolicy.cwd ?? process.cwd(),
             runtimePolicy: input.runtimePolicy,
             mcpServers: mcpContext.servers,
@@ -3489,11 +3509,13 @@ export function makeAcpAdapterV2(
                     ...base,
                     type: "dynamic_tool",
                     // Transcript echo has a stable extension name even for local ACP commands.
-                    toolName:
-                      unknownRecord(unknownRecord(toolCall.data.meta)?.hermes)?.toolName ===
-                      "voice_note_transcript"
-                        ? "voice_note_transcript"
-                        : (toolCall.title ?? toolCall.kind ?? null),
+                    toolName: ["hermes", "openclaw"].some(
+                      (namespace) =>
+                        unknownRecord(unknownRecord(toolCall.data.meta)?.[namespace])?.toolName ===
+                        "voice_note_transcript",
+                    )
+                      ? "voice_note_transcript"
+                      : (toolCall.title ?? toolCall.kind ?? null),
                     input: rawInput ?? {},
                     ...(rawOutput === undefined ? {} : { output: rawOutput }),
                   };
@@ -5971,6 +5993,7 @@ export function makeAcpAdapterV2(
           threadId: ThreadId | null,
           scope: Scope.Scope,
         ) {
+          if (flavor.omitMcpServers) return undefined;
           const mcpContext = acpMcpContext(threadId, self);
           if (mcpContext.endpoint === undefined || mcpContext.authorization === undefined) {
             return undefined;
@@ -6209,7 +6232,11 @@ export function makeAcpAdapterV2(
         yield* Ref.set(activeSessionId, started.sessionId);
         yield* Ref.set(activeSessionSetup, started);
         rememberTerminalEnvironment(started.sessionId, input.threadId);
-        const capabilities = negotiatedCapabilities(flavor.capabilities, started);
+        const capabilities = negotiatedCapabilities(
+          flavor.capabilities,
+          started,
+          flavor.omitMcpServers === true,
+        );
         const canLoadSession = started.initializeResult.agentCapabilities?.loadSession === true;
         const canResumeSession =
           started.initializeResult.agentCapabilities?.sessionCapabilities?.resume != null;
@@ -6229,7 +6256,7 @@ export function makeAcpAdapterV2(
           if (initialFailure !== undefined) {
             return yield* initialFailure;
           }
-          const activationOptions = acpMcpActivation(threadId, self);
+          const activationOptions = acpMcpActivation(threadId, self, flavor);
           prepareTerminalEnvironment(threadId, sessionId);
           const activated = canLoadSession
             ? yield* runtime.loadSession(sessionId, activationOptions)
@@ -7838,7 +7865,7 @@ export function makeAcpAdapterV2(
                     prepareTerminalEnvironment(snapshotInput.providerThread.appThreadId, sessionId);
                     const activated = yield* runtime.loadSession(
                       sessionId,
-                      acpMcpActivation(snapshotInput.providerThread.appThreadId, self),
+                      acpMcpActivation(snapshotInput.providerThread.appThreadId, self, flavor),
                     );
                     rememberTerminalEnvironment(
                       activated.sessionId,
@@ -8001,7 +8028,7 @@ export function makeAcpAdapterV2(
                   prepareTerminalEnvironment(forkInput.targetThreadId);
                   const forked = yield* runtime.forkSession(
                     sourceSessionId,
-                    acpMcpActivation(forkInput.targetThreadId, self),
+                    acpMcpActivation(forkInput.targetThreadId, self, flavor),
                   );
                   rememberTerminalEnvironment(forked.sessionId, forkInput.targetThreadId);
                   yield* Ref.set(activeSessionId, forked.sessionId);

@@ -892,7 +892,9 @@ const program = Effect.gen(function* () {
             status: "completed",
             rawOutput:
               "The complete transcript has no eighty-four character preview limit. ".repeat(5),
-            _meta: { hermes: { toolName: "voice_note_transcript" } },
+            _meta: {
+              [process.env.T3_ACP_VOICE_META ?? "hermes"]: { toolName: "voice_note_transcript" },
+            },
           },
         });
       }

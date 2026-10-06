@@ -13,6 +13,8 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   CheckpointId,
   GrokSettings,
+  OpenClawSettings,
+  AcpRegistrySettings,
   EnvironmentId,
   MessageId,
   type ModelSelection,
@@ -92,6 +94,9 @@ import {
   type AcpAdapterV2SubagentUpdate,
 } from "./AcpAdapterV2.ts";
 
+import { makeOpenClawAdapterV2 } from "./OpenClawAdapterV2.ts";
+import { makeHermesAdapterV2 } from "./HermesAdapterV2.ts";
+import { makeAcpRegistryAdapterV2 } from "./AcpRegistryAdapterV2.ts";
 import { makeGrokAdapterV2 } from "./GrokAdapterV2.ts";
 import {
   acpRegistryPromptFailure,
@@ -99,6 +104,8 @@ import {
 } from "./AcpRegistryAdapterV2.ts";
 
 const DEFAULT_GROK_SETTINGS = Schema.decodeSync(GrokSettings)({});
+const DEFAULT_OPENCLAW_SETTINGS = Schema.decodeSync(OpenClawSettings)({});
+const DEFAULT_ACP_REGISTRY_SETTINGS = Schema.decodeSync(AcpRegistrySettings)({});
 
 const serverConfigLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-acp-v2-adapter-",
@@ -754,6 +761,7 @@ describe("AcpAdapterV2", () => {
                 environment: {
                   T3_ACP_AUDIO: audioEnabled ? "1" : "0",
                   T3_ACP_VOICE_TRANSCRIPT: "1",
+                  T3_ACP_VOICE_META: audioEnabled ? "openclaw" : "hermes",
                 },
                 wrapRuntime: (runtime) => ({
                   ...runtime,
@@ -820,77 +828,172 @@ describe("AcpAdapterV2", () => {
       }).pipe(Effect.provide(testLayer), Effect.scoped),
   );
 
-  it.effect("starts the MCP bridge directly from the self-contained runtime", () =>
-    Effect.gen(function* () {
-      const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const fileSystem = yield* FileSystem.FileSystem;
-      const idAllocator = yield* IdAllocator.IdAllocatorV2;
-      const path = yield* Path.Path;
-      const serverConfig = yield* ServerConfig.ServerConfig;
-      const selfInvocation = yield* resolveSelfInvocation().pipe(
-        Effect.provideService(HostProcessIsExecutable, true),
-      );
-      const mockAgentPath = yield* path.fromFileUrl(
-        new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
-      );
+  it.effect.each(["hermes", "openclaw", "acpRegistry"] as const)(
+    "%s: only OpenClaw omits the MCP bridge on setup and activation",
+    (driver) =>
+      Effect.gen(function* () {
+        const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const path = yield* Path.Path;
+        const serverConfig = yield* ServerConfig.ServerConfig;
+        const selfInvocation = yield* resolveSelfInvocation().pipe(
+          Effect.provideService(HostProcessIsExecutable, true),
+        );
+        const mockAgentPath = yield* path.fromFileUrl(
+          new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+        );
 
-      const instanceId = ProviderInstanceId.make("acp-test-self-contained-mcp-bridge");
-      const threadId = ThreadId.make("thread-acp-self-contained-mcp-bridge");
-      McpProviderSession.setMcpProviderSession({
-        environmentId: EnvironmentId.make("environment-acp-self-contained-mcp-bridge"),
-        threadId,
-        providerSessionId: "mcp-session-acp-self-contained-mcp-bridge",
-        providerInstanceId: instanceId,
-        endpoint: "http://127.0.0.1:43123/mcp",
-        authorizationHeader: "Bearer self-contained-mcp-bridge-token",
-        browserToolsAvailable: false,
-      });
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => {
-          McpProviderSession.clearMcpProviderSession(threadId);
-        }),
-      );
+        const instanceId = ProviderInstanceId.make("acp-test-self-contained-mcp-bridge");
+        const threadId = ThreadId.make("thread-acp-self-contained-mcp-bridge");
+        McpProviderSession.setMcpProviderSession({
+          environmentId: EnvironmentId.make("environment-acp-self-contained-mcp-bridge"),
+          threadId,
+          providerSessionId: "mcp-session-acp-self-contained-mcp-bridge",
+          providerInstanceId: instanceId,
+          endpoint: "http://127.0.0.1:43123/mcp",
+          authorizationHeader: "Bearer self-contained-mcp-bridge-token",
+          browserToolsAvailable: false,
+        });
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            McpProviderSession.clearMcpProviderSession(threadId);
+          }),
+        );
 
-      let runtimeInput: AcpAdapterV2RuntimeInput | undefined;
-      const makeRuntime = makeMockRuntime({ childProcessSpawner, mockAgentPath });
-      const adapter = makeAcpAdapterV2({
-        crypto: yield* Crypto.Crypto,
-        instanceId,
-        flavor: {
-          driver: ACP_TEST_DRIVER,
-          capabilities: AcpProviderCapabilitiesV2,
-          makeRuntime: (input) =>
+        let runtimeInput: AcpAdapterV2RuntimeInput | undefined;
+        const makeRuntime = makeMockRuntime({
+          childProcessSpawner,
+          mockAgentPath,
+          // The generic fixture has ACP modes, not Hermes approval modes.
+          wrapRuntime: (runtime) => ({ ...runtime, setMode: () => Effect.succeed({}) }),
+        });
+        const requests: AcpSessionRuntime.AcpSessionRequestLogEvent[] = [];
+        const common = {
+          crypto: yield* Crypto.Crypto,
+          instanceId,
+          fileSystem,
+          idAllocator,
+          serverConfig,
+          selfInvocation,
+          childProcessSpawner,
+          environment: {},
+          makeRuntime: (input: AcpAdapterV2RuntimeInput) =>
             Effect.sync(() => {
               runtimeInput = input;
-            }).pipe(Effect.andThen(makeRuntime(input))),
-        },
-        fileSystem,
-        idAllocator,
-        serverConfig,
-        selfInvocation,
-      });
-      const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
-        runtimeMode: "full-access",
-        interactionMode: "default",
-        cwd: process.cwd(),
-      });
-      const modelSelection = { instanceId, model: "default" } as const;
-      yield* adapter.openSession({
-        threadId,
-        providerSessionId: ProviderSessionId.make("provider-session-acp-self-contained-mcp-bridge"),
-        modelSelection,
-        runtimePolicy,
-      });
+            }).pipe(
+              Effect.andThen(
+                makeRuntime({
+                  ...input,
+                  requestLogger: (event) =>
+                    Effect.sync(() => {
+                      if (event.status === "started") requests.push(event);
+                    }),
+                }),
+              ),
+            ),
+        };
+        const adapter =
+          driver === "hermes"
+            ? makeHermesAdapterV2({ ...common, settings: {} as never })
+            : driver === "openclaw"
+              ? makeOpenClawAdapterV2({
+                  ...common,
+                  settings: DEFAULT_OPENCLAW_SETTINGS,
+                })
+              : makeAcpRegistryAdapterV2({
+                  ...common,
+                  settings: DEFAULT_ACP_REGISTRY_SETTINGS,
+                  resolver: {} as never,
+                });
+        const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: process.cwd(),
+        });
+        const modelSelection = {
+          instanceId,
+          model: driver === "hermes" ? "hermes-agent" : "default",
+        } as const;
+        const providerRuntime = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make(
+            "provider-session-acp-self-contained-mcp-bridge",
+          ),
+          modelSelection,
+          runtimePolicy,
+        });
 
-      const mcpServer = runtimeInput?.mcpServers[0];
-      if (mcpServer === undefined || !("command" in mcpServer)) {
-        return yield* Effect.die("ACP runtime must receive the t3-code stdio MCP server");
-      }
-      assert.equal(mcpServer.command, process.execPath);
-      assert.deepEqual(mcpServer.args, ["acp-mcp-bridge"]);
-      assert.equal(runtimeInput?.processEnvironment?.T3_ACP_MCP_NODE, process.execPath);
-      assert.equal(runtimeInput?.processEnvironment?.T3_ACP_MCP_ENTRYPOINT, undefined);
-    }).pipe(Effect.provide(testLayer), Effect.scoped),
+        const providerThread = yield* providerRuntime.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const targetThreadId = ThreadId.make("target-thread");
+        McpProviderSession.setMcpProviderSession({
+          ...McpProviderSession.readMcpProviderSession(threadId)!,
+          threadId: targetThreadId,
+        });
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => McpProviderSession.clearMcpProviderSession(targetThreadId)),
+        );
+        assert.equal(
+          providerRuntime.providerSession.capabilities.tools.supportsMcpTools,
+          driver !== "openclaw",
+        );
+        yield* providerRuntime.resumeThread({
+          providerThread: {
+            ...providerThread,
+            appThreadId: targetThreadId,
+            nativeMetadata: null,
+            nativeThreadRef: {
+              driver: ProviderDriverKind.make(driver),
+              nativeId: "fixture-target",
+              strength: "strong",
+            },
+          },
+          modelSelection,
+          runtimePolicy,
+        });
+        const setup = requests.filter((event) =>
+          ["session/new", "session/load", "session/resume"].includes(event.method),
+        );
+        assert.isAtLeast(setup.length, 2);
+        if (driver === "openclaw") {
+          for (const event of setup) {
+            const payload = event.payload as {
+              mcpServers: unknown[];
+              _meta?: { sessionKey?: string };
+            };
+            assert.deepEqual(payload.mcpServers, []);
+            assert.equal(
+              payload._meta?.sessionKey,
+              `agent:main:t3:${event.method === "session/new" ? threadId : targetThreadId}`,
+            );
+          }
+          assert.deepEqual(runtimeInput?.mcpServers, []);
+          assert.deepEqual(runtimeInput?.acpMcpServers, []);
+          assert.equal(runtimeInput?.processEnvironment, undefined);
+          assert.deepEqual(runtimeInput?.sessionRequestMeta, {
+            sessionKey: `agent:main:t3:${threadId}`,
+          });
+          return;
+        }
+        for (const event of setup) {
+          assert.equal(
+            (event.payload as { mcpServers: { name: string }[] }).mcpServers[0]?.name,
+            "t3-code",
+          );
+        }
+        const mcpServer = runtimeInput?.mcpServers[0];
+        if (mcpServer === undefined || !("command" in mcpServer)) {
+          return yield* Effect.die("ACP runtime must receive the t3-code stdio MCP server");
+        }
+        assert.equal(mcpServer.command, process.execPath);
+        assert.deepEqual(mcpServer.args, ["acp-mcp-bridge"]);
+        assert.equal(runtimeInput?.processEnvironment?.T3_ACP_MCP_NODE, process.execPath);
+        assert.equal(runtimeInput?.processEnvironment?.T3_ACP_MCP_ENTRYPOINT, undefined);
+      }).pipe(Effect.provide(testLayer), Effect.scoped),
   );
 
   it.live("refreshes ACP prompt instructions when the interaction mode changes", () =>

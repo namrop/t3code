@@ -104,6 +104,8 @@ export interface AcpSessionRuntimeOptions {
   readonly cancelMeta?: EffectAcpSchema.CancelNotification["_meta"];
   /** Optional provider metadata forwarded on `initialize`. */
   readonly initializeMeta?: EffectAcpSchema.InitializeRequest["_meta"];
+  /** Provider extension metadata forwarded on session new/load/resume. */
+  readonly sessionRequestMeta?: EffectAcpSchema.NewSessionRequest["_meta"];
   readonly ownDetachedProcessGroup?: boolean;
   readonly ownDescendantProcessGroups?: boolean;
   readonly processGroupPlatform?: NodeJS.Platform;
@@ -1122,6 +1124,7 @@ export interface AcpSessionRuntimeStartResult {
 }
 
 export interface AcpSessionActivationOptions {
+  readonly sessionRequestMeta?: EffectAcpSchema.NewSessionRequest["_meta"];
   readonly mcpServers?: ReadonlyArray<EffectAcpSchema.McpServer>;
   readonly acpMcpServers?: ReadonlyArray<EffectAcpSchema.McpServer>;
 }
@@ -2225,12 +2228,18 @@ export const make = (
       return activationOptions?.mcpServers ?? options.mcpServers ?? [];
     };
 
+    const sessionRequestMeta = (activationOptions?: AcpSessionActivationOptions) => {
+      const meta = activationOptions?.sessionRequestMeta ?? options.sessionRequestMeta;
+      return meta === undefined ? {} : { _meta: meta };
+    };
+
     const createReplacementSession = (activationOptions?: AcpSessionActivationOptions) =>
       initialize.pipe(
         Effect.flatMap((initialized) => {
           const payload = {
             cwd: options.cwd,
             mcpServers: sessionMcpServers(initialized, activationOptions),
+            ...sessionRequestMeta(activationOptions),
             ...(options.additionalDirectories?.length
               ? { additionalDirectories: options.additionalDirectories }
               : {}),
@@ -2311,6 +2320,7 @@ export const make = (
               cwd: options.cwd,
               ...additionalDirectories,
               mcpServers: sessionMcpServers(initializeResult),
+              ...sessionRequestMeta(),
             } satisfies EffectAcpSchema.LoadSessionRequest;
             sessionSetupResult = yield* runLoadSessionWithReplayIdle(loadPayload, initializeResult);
           } else if (initializeResult.agentCapabilities?.sessionCapabilities?.resume != null) {
@@ -2319,6 +2329,7 @@ export const make = (
               cwd: options.cwd,
               ...additionalDirectories,
               mcpServers: sessionMcpServers(initializeResult),
+              ...sessionRequestMeta(),
             } satisfies EffectAcpSchema.ResumeSessionRequest;
             sessionSetupResult = yield* runLoggedRequest(
               "session/resume",
@@ -2335,6 +2346,7 @@ export const make = (
           const createPayload = {
             cwd: options.cwd,
             mcpServers: sessionMcpServers(initializeResult),
+            ...sessionRequestMeta(),
             ...additionalDirectories,
           } satisfies EffectAcpSchema.NewSessionRequest;
           const created = yield* runLoggedRequest(
@@ -2555,6 +2567,7 @@ export const make = (
               sessionId,
               cwd: options.cwd,
               mcpServers: sessionMcpServers(started.initializeResult, activationOptions),
+              ...sessionRequestMeta(activationOptions),
             } satisfies EffectAcpSchema.LoadSessionRequest;
             return runLoadSessionWithReplayIdle(requestPayload, started.initializeResult);
           }),
@@ -2572,6 +2585,7 @@ export const make = (
               sessionId,
               cwd: options.cwd,
               mcpServers: sessionMcpServers(started.initializeResult, activationOptions),
+              ...sessionRequestMeta(activationOptions),
             } satisfies EffectAcpSchema.ResumeSessionRequest;
             return runLoggedRequest(
               "session/resume",
@@ -2593,6 +2607,7 @@ export const make = (
               sessionId,
               cwd: options.cwd,
               mcpServers: sessionMcpServers(started.initializeResult, activationOptions),
+              ...sessionRequestMeta(activationOptions),
             } satisfies EffectAcpSchema.ForkSessionRequest;
             return runLoggedRequest(
               "session/fork",
