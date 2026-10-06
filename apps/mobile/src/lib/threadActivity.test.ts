@@ -43,6 +43,22 @@ const threadId = ThreadId.make("thread-1");
 const sourceThreadId = ThreadId.make("thread-source");
 const runId = RunId.make("run-1");
 
+it("keeps voice transcripts visible rather than folding them into tool work", () => {
+  const item: OrchestrationV2TurnItem = {
+    ...base("transcript", "2026-06-20T00:00:03.000Z", 2),
+    type: "dynamic_tool",
+    toolName: "voice_note_transcript",
+    title: "Tool call",
+    input: {},
+    output: [{ type: "text", text: "A spoken request." }],
+  };
+  const row = buildThreadFeed([projected(item, 0)]).flatMap((entry) =>
+    entry.type === "activity-group" ? entry.activities : [],
+  )[0];
+  expect(row?.prominent).toBe(true);
+  expect(row?.summary).toBe("Voice note transcript");
+});
+
 it("keeps historical plan detail accessible from its paged turn item", () => {
   const item = {
     ...base("historical-plan", "2026-08-29T00:00:00.000Z", 1),

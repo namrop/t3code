@@ -411,7 +411,12 @@ function itemIsToolLike(item: OrchestrationV2TurnItem): boolean {
 }
 
 function itemIsProminent(item: OrchestrationV2TurnItem): boolean {
-  return item.type === "fork" || item.type === "thread_created" || item.type === "system_notice";
+  return (
+    (item.type === "dynamic_tool" && item.toolName === "voice_note_transcript") ||
+    item.type === "fork" ||
+    item.type === "thread_created" ||
+    item.type === "system_notice"
+  );
 }
 
 function itemStatus(item: OrchestrationV2TurnItem): ThreadFeedActivity["status"] {
@@ -542,6 +547,8 @@ function itemSummary(
   item: OrchestrationV2TurnItem,
   toolPresentation: T3McpToolPresentation | null = null,
 ): string {
+  if (item.type === "dynamic_tool" && item.toolName === "voice_note_transcript")
+    return "Voice note transcript";
   if (item.type === "notification") return item.summary;
   if (item.type === "system_notice") return item.message;
   if (item.type === "compaction") return contextCompactionLabel(item);

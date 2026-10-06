@@ -1,4 +1,5 @@
 import { SubagentStatusDot } from "./SubagentStatusDot";
+import { voiceNoteTranscript } from "../voice-input/voiceNoteSession";
 import { ThreadSubagentGroup } from "./thread-subagent-group";
 import {
   WorkLogLabel,
@@ -841,11 +842,28 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
   const { row, expanded } = props;
   const navigation = useNavigation();
   const fetchedDetail = useTurnItemDetail(
-    expanded && row.fetchesDetail
+    (expanded ||
+      (row.projectedItem.item.type === "dynamic_tool" &&
+        row.projectedItem.item.toolName === "voice_note_transcript")) &&
+      row.fetchesDetail
       ? { environmentId: props.environmentId, row: row.projectedItem }
       : null,
   );
   const failureItem = row.projectedItem.item;
+  if (failureItem.type === "dynamic_tool" && failureItem.toolName === "voice_note_transcript") {
+    const transcript = voiceNoteTranscript(fetchedDetail.data?.item ?? failureItem);
+    return (
+      <View className="my-2 gap-1 rounded-xl bg-subtle p-3">
+        <Text className="font-t3-medium text-xs text-foreground-muted">Voice note transcript</Text>
+        <Text selectable className="text-sm text-foreground">
+          {transcript ??
+            (fetchedDetail.error
+              ? `Could not load transcript: ${fetchedDetail.error}`
+              : "Transcribing…")}
+        </Text>
+      </View>
+    );
+  }
   if (failureItem.type === "error" && failureItem.status === "failed") {
     const warning = failureItem.failure.class === "usage_limit";
     const timestamp = new Date(row.createdAt);

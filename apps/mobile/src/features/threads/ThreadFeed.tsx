@@ -129,6 +129,7 @@ import {
 import { CopyTextButton } from "../../components/CopyTextButton";
 import { parseReviewCommentMessageSegments } from "../review/reviewCommentSelection";
 import type { ReviewDiffTheme } from "../review/shikiReviewHighlighter";
+import { VoiceNoteAudio } from "../../components/VoiceNoteAudio";
 import {
   ReviewCommentCard,
   useReviewCommentColors,
@@ -561,6 +562,9 @@ function MessageAttachmentFile(props: {
     })();
   };
 
+  if (attachment.mimeType.startsWith("audio/")) {
+    return <VoiceNoteAudio environmentId={props.environmentId} attachment={attachment} />;
+  }
   if (videoType !== null) {
     const sourceIdentifier = `attachment:${props.environmentId}:${attachment.id}`;
     return (
@@ -1660,7 +1664,10 @@ function renderFeedEntry(
         ),
       );
       const visibleAttachments = attachments.filter(
-        (attachment) => isImageAttachment(attachment) || !inlineAttachmentIds.has(attachment.id),
+        (attachment) =>
+          isImageAttachment(attachment) ||
+          attachment.mimeType.startsWith("audio/") ||
+          !inlineAttachmentIds.has(attachment.id),
       );
       return (
         <Animated.View

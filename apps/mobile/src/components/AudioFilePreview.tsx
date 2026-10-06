@@ -8,7 +8,7 @@ function timestamp(seconds: number) {
   return `${Math.floor(value / 60)}:${String(value % 60).padStart(2, "0")}`;
 }
 
-export function AudioFilePreview(props: { uri: string; onRetry: () => void }) {
+export function AudioFilePreview(props: { uri: string; onRetry: () => void; compact?: boolean }) {
   const player = useAudioPlayer({ uri: props.uri }, { updateInterval: 500 });
   const status = useAudioPlayerStatus(player);
   const [seekError, setSeekError] = useState(false);
@@ -22,7 +22,13 @@ export function AudioFilePreview(props: { uri: string; onRetry: () => void }) {
       .catch(() => setSeekError(true));
   };
   return (
-    <View className="flex-1 items-center justify-center gap-5 p-6">
+    <View
+      className={
+        props.compact
+          ? "items-center justify-center gap-2 rounded-xl bg-subtle p-2"
+          : "flex-1 items-center justify-center gap-5 p-6"
+      }
+    >
       <Text className="text-foreground-muted">
         {timestamp(status.currentTime)} / {timestamp(status.duration)}
       </Text>
@@ -38,6 +44,7 @@ export function AudioFilePreview(props: { uri: string; onRetry: () => void }) {
         </Pressable>
         <Pressable
           accessibilityRole="button"
+          accessibilityLabel={status.playing ? "Pause voice note" : "Play voice note"}
           disabled={!status.isLoaded}
           onPress={() => {
             if (status.playing) player.pause();

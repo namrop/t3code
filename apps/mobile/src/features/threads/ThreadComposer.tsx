@@ -113,6 +113,8 @@ import {
   ComposerDictationToolbar,
 } from "../voice-input/ComposerDictationControl";
 import { useVoiceInputController } from "../voice-input/useVoiceInputController";
+import { ComposerVoiceNote } from "../voice-input/ComposerVoiceNote";
+import { providerTakesVoiceNotes } from "../voice-input/voiceNoteSession";
 import { resolveVoiceComposerPresentation } from "../voice-input/voiceInputPresentation";
 import {
   rememberModelOptions,
@@ -809,6 +811,18 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           </Pressable>
         ) : null}
 
+        {providerTakesVoiceNotes(selectedProviderStatus) && queuedEdit === null ? (
+          <ComposerVoiceNote
+            draftKey={composerDraftKey}
+            maxBytes={
+              props.serverConfig?.environment.capabilities.fileAttachments?.maxUploadBytes ??
+              20_000_000
+            }
+            disabled={voiceInput.isBusy}
+            sendBlocked={sendBlockedReason !== null || modelUnavailable}
+            onSend={props.onSendMessage}
+          />
+        ) : null}
         <ComposerSurface
           style={
             isExpanded
