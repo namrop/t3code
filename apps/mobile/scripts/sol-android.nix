@@ -14,9 +14,10 @@ let
   };
   sdk = "${android.androidsdk}/libexec/android-sdk";
 in pkgs.mkShell {
-  packages = [ pkgs.nodejs_24 pkgs.jdk17 pkgs.python3 pkgs.gnumake pkgs.gcc pkgs.cmake pkgs.ninja pkgs.pkg-config android.androidsdk pkgs.apksigner ];
+  packages = [ pkgs.nodejs_24 pkgs.jdk17 pkgs.jdk21 pkgs.python3 pkgs.gnumake pkgs.gcc pkgs.cmake pkgs.ninja pkgs.pkg-config android.androidsdk pkgs.apksigner ];
   JAVA_HOME = "${pkgs.jdk17}";
   ANDROID_HOME = sdk;
   ANDROID_SDK_ROOT = sdk;
-  GRADLE_OPTS = "-Dorg.gradle.project.android.aapt2FromMavenOverride=${sdk}/build-tools/37.0.0/aapt2 -Dorg.gradle.daemon=false";
+  # The notification library declares JVM21; AGP itself still starts on JVM17.
+  GRADLE_OPTS = "-Dorg.gradle.project.android.aapt2FromMavenOverride=${sdk}/build-tools/37.0.0/aapt2 -Dorg.gradle.project.org.gradle.java.installations.paths=${pkgs.jdk17},${pkgs.jdk21} -Dorg.gradle.daemon=false";
 }

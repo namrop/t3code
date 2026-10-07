@@ -38,6 +38,7 @@ import { SettingsRow } from "./components/SettingsRow";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
 import { SettingsScreen } from "./components/SettingsScreen";
+import { LocalEstateNotificationsRouteScreen } from "./LocalEstateNotificationsRouteScreen";
 import { resolveAgentAwarenessPlatformPresentation } from "./SettingsRouteScreen.logic";
 
 type NotificationStatus = "checking" | "enabled" | "disabled" | "unsupported";
@@ -57,6 +58,8 @@ function useDeviceRegistered(): boolean {
 }
 
 export function SettingsNotificationsRouteScreen() {
+  if (Platform.OS === "android" && !hasCloudPublicConfig())
+    return <LocalEstateNotificationsRouteScreen />;
   if (!hasCloudPublicConfig()) {
     return (
       <SettingsScreen title="Notifications">

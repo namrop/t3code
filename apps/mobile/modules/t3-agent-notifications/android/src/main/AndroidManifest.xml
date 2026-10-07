@@ -1,7 +1,20 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
   <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
   <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
+  <queries>
+    <intent><action android:name="org.unifiedpush.android.distributor.REGISTER" /></intent>
+    <package android:name="io.heckel.ntfy" />
+    <package android:name="io.heckel.ntfy.fdroid" />
+  </queries>
   <application>
+    <receiver android:name=".EstateUnifiedPushReceiver" android:exported="true">
+      <intent-filter>
+        <action android:name="org.unifiedpush.android.connector.NEW_ENDPOINT" />
+        <action android:name="org.unifiedpush.android.connector.MESSAGE" />
+        <action android:name="org.unifiedpush.android.connector.UNREGISTERED" />
+        <action android:name="org.unifiedpush.android.connector.REGISTRATION_FAILED" />
+      </intent-filter>
+    </receiver>
     <service android:name="expo.modules.notifications.service.ExpoFirebaseMessagingService" tools:node="remove" />
     <service android:name=".AgentMessagingService" android:exported="false">
       <intent-filter>

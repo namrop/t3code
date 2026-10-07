@@ -11,6 +11,21 @@ class T3AgentNotificationsModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("T3AgentNotifications")
 
+    AsyncFunction("configureEstatePush") { configuration: String, credential: String ->
+      appContext.reactContext?.let {
+        try { EstateUnifiedPush.configure(it, configuration, credential) }
+        catch (_: Exception) { EstateUnifiedPush.registrationFailed(it) }
+      }
+    }
+
+    AsyncFunction("disableEstatePush") {
+      appContext.reactContext?.let { EstateUnifiedPush.disable(it) }
+    }
+
+    Function("estatePushState") {
+      appContext.reactContext?.let { EstateUnifiedPush.state(it) }
+    }
+
     Function("configure") {
         deviceId: String,
         userId: String,
@@ -23,7 +38,9 @@ class T3AgentNotificationsModule : Module() {
     }
 
     Function("clear") {
-      appContext.reactContext?.let { AgentNotifications.clear(it) }
+      // A cloud sign-out is not a local Sol-pairing sign-out. Estate opt-out
+      // clears presentation explicitly through disableEstatePush instead.
+      appContext.reactContext?.let { if (!EstateUnifiedPush.isEnabled(it)) AgentNotifications.clear(it) }
     }
 
     Function("showShowcaseActivity") { scheme: String, data: Map<String, String> ->

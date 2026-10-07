@@ -15,6 +15,7 @@ it("isolates the Sol APK even when ambient cloud settings are present", async ()
   expect(config.updates?.enabled).toBe(false);
   expect(config.updates?.url).toBeUndefined();
   expect(config.android?.googleServicesFile).toBeUndefined();
+  expect(config.android?.allowBackup).toBe(false);
   expect(config.extra?.clerk.publishableKey).toBeNull();
   expect(config.extra?.relay.url).toBeNull();
   expect(config.extra?.eas).toBeUndefined();

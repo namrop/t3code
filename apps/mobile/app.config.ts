@@ -300,6 +300,8 @@ const config: ExpoConfig = {
   },
   android: {
     icon: variant.assets.appIcon,
+    // Sol's native paired push credential must not be restored without its Keystore key.
+    allowBackup: !isSolBuild,
     package: variant.androidPackage,
     ...(!isSolBuild && repoEnv.T3CODE_ANDROID_GOOGLE_SERVICES_FILE
       ? { googleServicesFile: repoEnv.T3CODE_ANDROID_GOOGLE_SERVICES_FILE }

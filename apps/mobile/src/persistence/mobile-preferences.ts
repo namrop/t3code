@@ -17,6 +17,10 @@ const PREFERENCES_KEY = "t3code.preferences";
 const PREFERENCES_FALLBACK_KEY = "t3code.preferences.fallback";
 
 export interface Preferences {
+  readonly estatePushEnabled?: boolean;
+  readonly estatePushPreferences?: Readonly<
+    Record<"approval" | "input" | "completed" | "failed", boolean>
+  >;
   readonly liveActivitiesEnabled?: boolean;
   readonly themeId?: MobileThemeId;
   readonly lightThemeId?: MobileThemeId;
@@ -93,6 +97,8 @@ export class MobilePreferencesStore extends Context.Service<
 
 function sanitizePreferences(parsed: Preferences): Preferences {
   const preferences: {
+    estatePushEnabled?: boolean;
+    estatePushPreferences?: Preferences["estatePushPreferences"];
     liveActivitiesEnabled?: boolean;
     themeId?: MobileThemeId;
     lightThemeId?: MobileThemeId;
@@ -116,6 +122,23 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     threadListSnoozedShelfExpanded?: boolean;
     threadListWorkingShelfExpanded?: boolean;
   } = {};
+
+  if (typeof parsed.estatePushEnabled === "boolean")
+    preferences.estatePushEnabled = parsed.estatePushEnabled;
+  const pushPreferences = parsed.estatePushPreferences;
+  if (
+    pushPreferences &&
+    ["approval", "input", "completed", "failed"].every(
+      (key) => typeof pushPreferences[key as keyof typeof pushPreferences] === "boolean",
+    )
+  ) {
+    preferences.estatePushPreferences = {
+      approval: pushPreferences.approval,
+      input: pushPreferences.input,
+      completed: pushPreferences.completed,
+      failed: pushPreferences.failed,
+    };
+  }
 
   if (typeof parsed.liveActivitiesEnabled === "boolean") {
     preferences.liveActivitiesEnabled = parsed.liveActivitiesEnabled;
