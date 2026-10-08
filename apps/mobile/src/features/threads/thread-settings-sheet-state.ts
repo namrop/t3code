@@ -1,5 +1,5 @@
 import type { ModelOption, ProviderGroup } from "../../lib/modelOptions";
-import type { ProviderInstanceId } from "@t3tools/contracts";
+import type { ModelSelection, ProviderInstanceId } from "@t3tools/contracts";
 
 export type ModelFavorite = {
   readonly provider: ProviderInstanceId;
@@ -21,16 +21,51 @@ export function toggleModelFavorite(
     : [...favorites, { provider, model }];
 }
 
-/** Keep catalog order within each group when favorites move to the front. */
+export type ModelUse = ModelFavorite & { readonly usedAt: string };
+
+export function recentModelUses(
+  threads: ReadonlyArray<{ readonly modelSelection: ModelSelection; readonly updatedAt: string }>,
+): ReadonlyArray<ModelUse> {
+  const uses = new Map<string, ModelUse>();
+  for (const thread of threads) {
+    const { instanceId: provider, model } = thread.modelSelection;
+    const key = modelFavoriteKey(provider, model);
+    if (!uses.has(key) || thread.updatedAt > uses.get(key)!.usedAt)
+      uses.set(key, { provider, model, usedAt: thread.updatedAt });
+  }
+  return [...uses.values()].sort((a, b) => b.usedAt.localeCompare(a.usedAt));
+}
+
+export function visiblePickerModels(
+  models: ReadonlyArray<ModelOption>,
+  hidden: ReadonlySet<string>,
+  selected: ModelSelection | null,
+  showHidden: boolean,
+): ReadonlyArray<ModelOption> {
+  return models.filter((option) =>
+    showHidden
+      ? hidden.has(option.key)
+      : !hidden.has(option.key) ||
+        (option.selection.instanceId === selected?.instanceId &&
+          option.selection.model === selected.model),
+  );
+}
+
+/** Favorites retain catalog order; other models follow their last thread use. */
 export function favoritesFirst(
   models: ReadonlyArray<ModelOption>,
   favoriteKeys: ReadonlySet<string>,
+  recent: ReadonlyArray<ModelUse> = [],
 ): ReadonlyArray<ModelOption> {
   const favorites: ModelOption[] = [];
   const others: ModelOption[] = [];
   for (const model of models) {
     (favoriteKeys.has(model.key) ? favorites : others).push(model);
   }
+  const rank = new Map(
+    recent.map((use, index) => [modelFavoriteKey(use.provider, use.model), index]),
+  );
+  others.sort((a, b) => (rank.get(a.key) ?? Infinity) - (rank.get(b.key) ?? Infinity));
   return [...favorites, ...others];
 }
 

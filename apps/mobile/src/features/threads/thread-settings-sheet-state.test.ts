@@ -6,6 +6,8 @@ import type { ModelOption } from "../../lib/modelOptions";
 import {
   canCommitPendingModel,
   favoritesFirst,
+  recentModelUses,
+  visiblePickerModels,
   modelFavoriteKey,
   modelMatchesCatalogQuery,
   pendingModelAfterPress,
@@ -35,6 +37,29 @@ function modelOption(
 }
 
 describe("thread settings sheet state", () => {
+  it("orders favorites before recent usage and isolates provider instances", () => {
+    const models = [modelOption("old"), modelOption("recent"), modelOption("favorite")];
+    const recent = recentModelUses([
+      { modelSelection: models[0]!.selection, updatedAt: "2026-10-01" },
+      { modelSelection: models[1]!.selection, updatedAt: "2026-10-07" },
+      { modelSelection: models[0]!.selection, updatedAt: "2026-10-02" },
+    ]);
+    expect(recent.map((use) => use.model)).toEqual(["recent", "old"]);
+    expect(
+      favoritesFirst(models, new Set(["codex:favorite"]), recent).map((model) => model.label),
+    ).toEqual(["favorite", "recent", "old"]);
+  });
+  it("filters hidden models but preserves the applied selection and recovery list", () => {
+    const models = [modelOption("one"), modelOption("two"), modelOption("three")];
+    const hidden = new Set(["codex:one", "codex:two"]);
+    expect(
+      visiblePickerModels(models, hidden, models[0]!.selection, false).map((model) => model.label),
+    ).toEqual(["one", "three"]);
+    expect(visiblePickerModels(models, hidden, null, true).map((model) => model.label)).toEqual([
+      "one",
+      "two",
+    ]);
+  });
   it("keeps favorites in catalog order ahead of other models", () => {
     const models = [
       modelOption("first"),

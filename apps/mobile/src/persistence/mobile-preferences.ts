@@ -52,6 +52,12 @@ export interface Preferences {
     readonly provider: ProviderInstanceId;
     readonly model: string;
   }>;
+  readonly hiddenModels?: Preferences["modelFavorites"];
+  readonly recentModels?: ReadonlyArray<{
+    readonly provider: ProviderInstanceId;
+    readonly model: string;
+    readonly usedAt: string;
+  }>;
   /** Fresh keys reset both shelves to collapsed when users update. */
   readonly threadListSettledShelfExpanded?: boolean;
   readonly threadListSnoozedShelfExpanded?: boolean;
@@ -118,6 +124,8 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     planModeEnabled?: boolean;
     workingShelfEnabled?: boolean;
     modelFavorites?: Preferences["modelFavorites"];
+    hiddenModels?: Preferences["hiddenModels"];
+    recentModels?: Preferences["recentModels"];
     threadListSettledShelfExpanded?: boolean;
     threadListSnoozedShelfExpanded?: boolean;
     threadListWorkingShelfExpanded?: boolean;
@@ -211,15 +219,26 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   if (typeof parsed.workingShelfEnabled === "boolean") {
     preferences.workingShelfEnabled = parsed.workingShelfEnabled;
   }
-  if (Array.isArray(parsed.modelFavorites)) {
-    preferences.modelFavorites = parsed.modelFavorites.filter(
-      (favorite) =>
-        typeof favorite === "object" &&
-        favorite !== null &&
-        typeof favorite.provider === "string" &&
-        favorite.provider.length > 0 &&
-        typeof favorite.model === "string" &&
-        favorite.model.trim().length > 0,
+  for (const key of ["modelFavorites", "hiddenModels"] as const) {
+    if (Array.isArray(parsed[key])) {
+      preferences[key] = parsed[key].filter(
+        (favorite) =>
+          typeof favorite === "object" &&
+          favorite !== null &&
+          typeof favorite.provider === "string" &&
+          favorite.provider.length > 0 &&
+          typeof favorite.model === "string" &&
+          favorite.model.trim().length > 0,
+      );
+    }
+  }
+  if (Array.isArray(parsed.recentModels)) {
+    preferences.recentModels = parsed.recentModels.filter(
+      (use) =>
+        use &&
+        typeof use.provider === "string" &&
+        typeof use.model === "string" &&
+        typeof use.usedAt === "string",
     );
   }
   if (typeof parsed.threadListSettledShelfExpanded === "boolean") {

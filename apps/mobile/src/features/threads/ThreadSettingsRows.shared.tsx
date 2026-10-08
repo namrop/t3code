@@ -9,6 +9,7 @@ export type ModelRowProps = {
   readonly option: ModelOption;
   readonly selected: boolean;
   readonly onPress: () => void;
+  readonly onLongPress?: () => void;
   readonly isFavorite: boolean;
   readonly favoritesLoaded: boolean;
   readonly onToggleFavorite: () => void;
@@ -57,6 +58,7 @@ export function ModelRowContent(
         className="min-h-11 min-w-0 flex-1 flex-row items-center gap-2 active:opacity-70"
         disabled={props.option.isUnavailable}
         onPress={props.onPress}
+        onLongPress={props.onLongPress}
       >
         {props.leadingSelection}
         <View className="min-w-0 flex-1">

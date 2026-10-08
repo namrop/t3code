@@ -27,6 +27,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -56,6 +57,7 @@ import { applyProviderOptionSelection } from "../../lib/providerOptions";
 import { resolveProviderOptionDescriptors } from "../../lib/providerOptions";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { rememberModelOptions } from "../../state/use-model-option-memory";
+import { useThreadShells } from "../../state/entities";
 import {
   NativeHeaderToolbar,
   NativeStackScreenOptions,
@@ -86,6 +88,9 @@ import {
 import {
   canCommitPendingModel,
   favoritesFirst,
+  recentModelUses,
+  visiblePickerModels,
+  type ModelUse,
   modelFavoriteKey,
   modelMatchesCatalogQuery,
   pendingModelAfterPress,
@@ -128,6 +133,7 @@ const EMPTY_MODEL_FAVORITES: ReadonlyArray<{
   readonly model: string;
 }> = [];
 const FAVORITES_PROVIDER_FILTER = "@favorites";
+const HIDDEN_PROVIDER_FILTER = "@hidden";
 /** Provider catalog header with its harness logo and disclosure state. */
 function ProviderHeader(props: {
   readonly driver: string | undefined;
@@ -301,6 +307,9 @@ type ThreadSettingsSessionValue = {
   readonly providerInstanceId?: ProviderInstanceId;
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
   readonly favoriteKeys: ReadonlySet<string>;
+  readonly hiddenKeys: ReadonlySet<string>;
+  readonly recentModels: ReadonlyArray<ModelUse>;
+  readonly toggleHidden: (option: ModelOption) => void;
   readonly favoritesLoaded: boolean;
   readonly toggleFavorite: (option: ModelOption) => void;
   readonly runtimeMode: RuntimeMode;
@@ -361,7 +370,45 @@ function ThreadSettingsSessionProvider(
     [favoritesLoaded, savePreferences],
   );
   const [showLegacyToggle, setShowLegacyToggle] = useState(false);
-  const [providerFilter, setProviderFilter] = useState<string | null>(null);
+  const [providerFilter, setProviderFilter] = useState<string | null>(() =>
+    modelFavorites.length > 0 ? FAVORITES_PROVIDER_FILTER : null,
+  );
+  const initializedFilter = useRef(favoritesLoaded);
+  useEffect(() => {
+    if (!favoritesLoaded || initializedFilter.current) return;
+    initializedFilter.current = true;
+    if (modelFavorites.length > 0) setProviderFilter(FAVORITES_PROVIDER_FILTER);
+  }, [favoritesLoaded, modelFavorites]);
+  const threads = useThreadShells();
+  const recentModels = useMemo(
+    () => recentModelUses(threads.filter((thread) => thread.environmentId === props.environmentId)),
+    [threads, props.environmentId],
+  );
+  useEffect(() => {
+    if (!AsyncResult.isSuccess(preferences)) return;
+    if (JSON.stringify(preferences.value.recentModels ?? []) !== JSON.stringify(recentModels))
+      savePreferences({ transform: () => ({ recentModels }) });
+  }, [preferences, recentModels, savePreferences]);
+  const hiddenKeys = useMemo(
+    () =>
+      new Set(
+        (AsyncResult.isSuccess(preferences) ? (preferences.value.hiddenModels ?? []) : []).map(
+          (model) => modelFavoriteKey(model.provider, model.model),
+        ),
+      ),
+    [preferences],
+  );
+  const toggleHidden = useCallback(
+    (option: ModelOption) => {
+      if (!favoritesLoaded) return;
+      savePreferences({
+        transform: (current) => ({
+          hiddenModels: toggleModelFavorite(current.hiddenModels ?? [], option),
+        }),
+      });
+    },
+    [favoritesLoaded, savePreferences],
+  );
   const [searchQuery, setSearchQuery] = useState("");
   const [providerExpansionOverrides, setProviderExpansionOverrides] = useState<ReadonlySet<string>>(
     () => new Set(),
@@ -483,6 +530,9 @@ function ThreadSettingsSessionProvider(
       displayedDescriptors,
       displayedModelSelection: pendingModel?.selection ?? props.selectedModel,
       reportedModelSelection: pendingModel ? null : (props.reportedModelSelection ?? null),
+      hiddenKeys,
+      recentModels,
+      toggleHidden,
       favoriteKeys,
       favoritesLoaded,
       providerExpansionOverrides,
@@ -507,6 +557,9 @@ function ThreadSettingsSessionProvider(
       commitPendingModel,
       compatibleRuntimeMode,
       displayedDescriptors,
+      hiddenKeys,
+      recentModels,
+      toggleHidden,
       favoriteKeys,
       favoritesLoaded,
       providerExpansionOverrides,
@@ -595,6 +648,15 @@ function ThreadSettingsModelListRow(props: {
       isLast={props.isLast}
       onPress={onPress}
       isFavorite={session.favoriteKeys.has(props.option.key)}
+      onLongPress={() =>
+        Alert.alert(props.option.label, undefined, [
+          {
+            text: session.hiddenKeys.has(props.option.key) ? "Unhide model" : "Hide model",
+            onPress: () => session.toggleHidden(props.option),
+          },
+          { text: "Cancel", style: "cancel" },
+        ])
+      }
       favoritesLoaded={session.favoritesLoaded}
       onToggleFavorite={() => session.toggleFavorite(props.option)}
       option={props.option}
@@ -634,13 +696,16 @@ function useThreadSettingsCatalogItems(
         if (
           session.providerFilter !== null &&
           session.providerFilter !== FAVORITES_PROVIDER_FILTER &&
+          session.providerFilter !== HIDDEN_PROVIDER_FILTER &&
           group.providerKey !== session.providerFilter
         ) {
           return [];
         }
         const driver = group.models[0]?.providerDriver ?? group.providerKey;
         const catalogModels =
-          session.showLegacy || session.providerFilter === FAVORITES_PROVIDER_FILTER
+          session.showLegacy ||
+          session.providerFilter === FAVORITES_PROVIDER_FILTER ||
+          session.providerFilter === HIDDEN_PROVIDER_FILTER
             ? group.models
             : group.models.filter(
                 (model) =>
@@ -649,7 +714,12 @@ function useThreadSettingsCatalogItems(
                   session.favoriteKeys.has(model.key),
               );
         const visibleModels = favoritesFirst(
-          catalogModels.filter(
+          visiblePickerModels(
+            catalogModels,
+            session.hiddenKeys,
+            session.displayedModelSelection,
+            session.providerFilter === HIDDEN_PROVIDER_FILTER,
+          ).filter(
             (model) =>
               (session.providerFilter !== FAVORITES_PROVIDER_FILTER ||
                 session.favoriteKeys.has(model.key)) &&
@@ -660,6 +730,7 @@ function useThreadSettingsCatalogItems(
               }),
           ),
           session.favoriteKeys,
+          session.recentModels,
         );
         if (visibleModels.length === 0) {
           return [];
@@ -706,6 +777,9 @@ function useThreadSettingsCatalogItems(
       session.isDisplayed,
       session.favoriteKeys,
       session.providerExpansionOverrides,
+      session.hiddenKeys,
+      session.recentModels,
+      session.displayedModelSelection,
       session.providerFilter,
       session.providerGroups,
       session.searchQuery,
@@ -1099,6 +1173,7 @@ function ThreadSettingsModelsScreen() {
     () => [
       { id: "all-providers", title: "All providers", value: null },
       { id: "favorites", title: "Favorites", value: FAVORITES_PROVIDER_FILTER },
+      { id: "hidden", title: "Hidden models", value: HIDDEN_PROVIDER_FILTER },
       ...session.providerGroups.map((group) => ({
         id: `provider:${group.providerKey}`,
         title: group.providerLabel,
