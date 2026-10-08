@@ -811,374 +811,394 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           </Pressable>
         ) : null}
 
-        {providerTakesVoiceNotes(selectedProviderStatus) && queuedEdit === null ? (
-          <ComposerVoiceNote
-            draftKey={composerDraftKey}
-            maxBytes={
-              props.serverConfig?.environment.capabilities.fileAttachments?.maxUploadBytes ??
-              20_000_000
-            }
-            disabled={voiceInput.isBusy}
-            sendBlocked={sendBlockedReason !== null || modelUnavailable}
-            onSend={props.onSendMessage}
-          />
-        ) : null}
-        <ComposerSurface
-          style={
-            isExpanded
-              ? {
-                  borderRadius: 26,
-                  minHeight: 140,
-                  overflow: "hidden" as const,
-                  paddingBottom: 6,
-                  paddingTop: 14,
-                }
-              : {
-                  // Keep the numeric radius close to the expanded card so the
-                  // shape morph stays bounded while rendering as a capsule.
-                  borderRadius: 27,
-                  overflow: "hidden" as const,
-                  paddingVertical: 2,
-                }
+        <ComposerVoiceNote
+          enabled={providerTakesVoiceNotes(selectedProviderStatus) && queuedEdit === null}
+          draftKey={composerDraftKey}
+          maxBytes={
+            props.serverConfig?.environment.capabilities.fileAttachments?.maxUploadBytes ??
+            20_000_000
           }
+          disabled={voiceInput.isBusy}
+          sendBlocked={sendBlockedReason !== null || modelUnavailable}
+          onSend={props.onSendMessage}
         >
-          <ComposerDictationDraftContent
-            className={isExpanded ? undefined : "flex-row items-center"}
-            compact={!isExpanded}
-            hidden={showsCompactDictation}
-          >
-            {!isExpanded ? (
-              <ComposerAttachmentButton
-                supportsFiles={Boolean(
-                  props.serverConfig?.environment.capabilities.fileAttachments,
-                )}
-                onPickMedia={props.onPickDraftMedia}
-                onPickFiles={props.onPickDraftFiles}
-              />
-            ) : null}
-            {isExpanded && queuedEdit !== null && queuedEdit.existingAttachments.length > 0 ? (
-              <Animated.View
-                className="px-[14px] pb-2.5"
-                entering={COMPOSER_ATTACHMENT_ENTERING}
-                exiting={FadeOut.duration(120)}
-              >
-                <ComposerQueuedEditAttachments
-                  environmentId={props.environmentId}
-                  attachments={queuedEdit.existingAttachments}
-                  disabled={queuedEdit.saving || voiceInput.isBusy}
-                  onRemove={queuedEdit.onRemoveExistingAttachment}
-                />
-              </Animated.View>
-            ) : null}
-            {isExpanded && stripAttachments.length > 0 ? (
-              <Animated.View
-                className="px-[14px] pb-2.5"
-                entering={COMPOSER_ATTACHMENT_ENTERING}
-                exiting={FadeOut.duration(120)}
-              >
-                <ComposerAttachmentStrip
-                  environmentId={props.environmentId}
-                  attachments={stripAttachments}
-                  onRemove={voiceInput.isBusy ? () => undefined : props.onRemoveDraftImage}
-                  onPressPreview={voiceInput.isBusy ? undefined : onPressPreview}
-                  onPressVideo={voiceInput.isBusy ? undefined : onPressVideo}
-                  onPressDocument={
-                    voiceInput.isBusy
-                      ? undefined
-                      : (attachment) =>
-                          openDraftDocument({
-                            attachmentId: attachment.id,
-                            name: attachment.name,
-                            mimeType: attachment.mimeType,
-                            sizeBytes: attachment.sizeBytes,
-                          })
-                  }
-                />
-              </Animated.View>
-            ) : null}
-            <Animated.View
-              className={isExpanded ? "px-[14px]" : "min-w-0 flex-1 px-[4px]"}
-              layout={COMPOSER_LAYOUT_TRANSITION}
-            >
-              <ComposerEditor
-                draftKey={composerDraftKey}
-                environmentId={props.environmentId}
-                onOpenMention={(path) => {
-                  Keyboard.dismiss();
-                  navigation.navigate("ThreadFile", {
-                    environmentId: String(props.environmentId),
-                    threadId: String(props.selectedThread.id),
-                    path: fileRoutePathSegments(path),
-                  });
-                }}
-                onOpenAttachment={openDraftDocument}
-                // A rested composer full of chips left almost nowhere to tap to start typing:
-                // every chip opened its file instead. Collapsed, they focus the editor.
-                chipsInert={!isExpanded}
-                onInertChipPress={() => inputRef.current?.focus()}
-                ref={inputRef}
-                multiline
-                value={props.draftMessage}
-                readOnly={voiceInput.freezesEditor}
-                skills={composerMenu.skills}
-                selection={composerMenu.selection}
-                onChangeText={props.onChangeDraftMessage}
-                onSelectionChange={composerMenu.onSelectionChange}
-                onPasteImages={(uris) => void props.onNativePasteImages(uris)}
-                onPasteText={(paste) => {
-                  const insertPaste = () => {
-                    const insertion = replaceTextSelection({
-                      value: paste.value,
-                      selection: paste.selection,
-                      text: paste.text,
-                    });
-                    const selection = { start: insertion.cursor, end: insertion.cursor };
-                    props.onChangeDraftMessage(insertion.value);
-                    composerMenu.onSelectionChange(selection);
-                  };
-                  const capabilities = props.serverConfig?.environment.capabilities;
-                  const advertisedMax =
-                    capabilities?.attachmentUploads === true
-                      ? capabilities.fileAttachments?.maxUploadBytes
-                      : undefined;
-                  const maxBytes =
-                    advertisedMax === undefined
-                      ? null
-                      : clampFileAttachmentUploadBytes(advertisedMax);
-                  const wouldExceedInputLimit =
-                    paste.value.length -
-                      Math.max(0, paste.selection.end - paste.selection.start) +
-                      paste.text.length >
-                    PROVIDER_SEND_TURN_MAX_INPUT_CHARS;
-                  const canAttach =
-                    maxBytes !== null &&
-                    countComposerDraftAttachmentsAfterSelection(composerDraftKey, {
-                      text: paste.value,
-                      ...paste.selection,
-                    }) < PROVIDER_SEND_TURN_MAX_ATTACHMENTS &&
-                    new TextEncoder().encode(paste.text).byteLength <= maxBytes;
-                  if (
-                    pastedTextDisposition({
-                      text: paste.text,
-                      wouldExceedInputLimit,
-                      canAttach: true,
-                    }) === "attachment"
-                  ) {
-                    if (canAttach) {
-                      pendingPastedTextAttachmentCountRef.current += 1;
-                      setPendingPastedTextAttachmentCount(
-                        pendingPastedTextAttachmentCountRef.current,
-                      );
-                      const finishAttachment = () => {
-                        pendingPastedTextAttachmentCountRef.current = Math.max(
-                          0,
-                          pendingPastedTextAttachmentCountRef.current - 1,
-                        );
-                        setPendingPastedTextAttachmentCount(
-                          pendingPastedTextAttachmentCountRef.current,
-                        );
-                      };
-                      void props.onNativePasteText(paste).then(finishAttachment, finishAttachment);
-                    } else if (!wouldExceedInputLimit) {
-                      insertPaste();
-                    } else {
-                      Alert.alert(
-                        wouldExceedInputLimit
-                          ? "Pasted text is too large for this message"
-                          : "Could not attach pasted text",
-                        wouldExceedInputLimit
-                          ? "Remove some text or an attachment, then paste again."
-                          : "Remove an attachment or use a smaller paste, then try again.",
-                      );
+          {(voiceNoteBusy, voiceNoteControl) => (
+            <ComposerSurface
+              style={
+                isExpanded
+                  ? {
+                      borderRadius: 26,
+                      minHeight: 140,
+                      overflow: "hidden" as const,
+                      paddingBottom: 6,
+                      paddingTop: 14,
                     }
-                    return;
-                  }
-                  insertPaste();
-                }}
-                placeholder={props.placeholder}
-                onFocus={handleFocus}
-                onBlur={handleBlur}
-                // Command-Return sends the other way, matching web's Mod+Enter.
-                onSubmit={(alternate) =>
-                  void handleSend(
-                    alternate && sendPresentation.alternate !== null
-                      ? sendPresentation.alternate
-                      : undefined,
-                  )
-                }
-                submitTitle={sendPresentation.label}
-                alternateSubmitTitle={
-                  sendPresentation.alternate === null
-                    ? sendPresentation.label
-                    : FOLLOW_UP_ACTION_LABEL[sendPresentation.alternate]
-                }
-                scrollEnabled={isExpanded}
-                // Android: collapsed single line centers natively (gravity) in
-                // a pill-height box matching the send button; iOS keeps insets.
-                singleLineCentered={!isExpanded}
-                contentInsetVertical={isExpanded || Platform.OS === "android" ? 0 : 6}
-                style={
-                  isExpanded
-                    ? {
-                        minHeight: 72,
-                        maxHeight: 160,
-                        paddingVertical: 4,
-                      }
-                    : {
-                        height: 36,
-                      }
-                }
-                textStyle={{
-                  ...bodyText,
-                  color: foregroundColor,
-                }}
-              />
-            </Animated.View>
-            {!isExpanded && stripAttachments.length > 0 ? (
-              <View className="flex-row gap-1 pl-1">
-                {stripAttachments.slice(0, 3).map((attachment) => (
-                  <ComposerAttachmentThumbnail
-                    environmentId={props.environmentId}
-                    key={attachment.id}
-                    attachment={attachment}
-                    size={30}
-                    borderRadius={8}
-                    compact
-                    onPressPreview={onPressPreview}
-                    onPressVideo={onPressVideo}
+                  : {
+                      // Keep the numeric radius close to the expanded card so the
+                      // shape morph stays bounded while rendering as a capsule.
+                      borderRadius: 27,
+                      overflow: "hidden" as const,
+                      paddingVertical: 2,
+                    }
+              }
+            >
+              <ComposerDictationDraftContent
+                className={isExpanded ? undefined : "flex-row items-center"}
+                compact={!isExpanded}
+                hidden={showsCompactDictation || (voiceNoteBusy && !isExpanded)}
+              >
+                {!isExpanded ? (
+                  <ComposerAttachmentButton
+                    supportsFiles={Boolean(
+                      props.serverConfig?.environment.capabilities.fileAttachments,
+                    )}
+                    onPickMedia={props.onPickDraftMedia}
+                    onPickFiles={props.onPickDraftFiles}
                   />
-                ))}
-                {stripAttachments.length > 3 ? (
-                  <View className="size-[30px] items-center justify-center rounded-lg bg-subtle-strong">
-                    <Text className="text-foreground-muted text-2xs font-t3-bold">
-                      +{stripAttachments.length - 3}
-                    </Text>
+                ) : null}
+                {isExpanded && queuedEdit !== null && queuedEdit.existingAttachments.length > 0 ? (
+                  <Animated.View
+                    className="px-[14px] pb-2.5"
+                    entering={COMPOSER_ATTACHMENT_ENTERING}
+                    exiting={FadeOut.duration(120)}
+                  >
+                    <ComposerQueuedEditAttachments
+                      environmentId={props.environmentId}
+                      attachments={queuedEdit.existingAttachments}
+                      disabled={queuedEdit.saving || voiceInput.isBusy}
+                      onRemove={queuedEdit.onRemoveExistingAttachment}
+                    />
+                  </Animated.View>
+                ) : null}
+                {isExpanded && stripAttachments.length > 0 ? (
+                  <Animated.View
+                    className="px-[14px] pb-2.5"
+                    entering={COMPOSER_ATTACHMENT_ENTERING}
+                    exiting={FadeOut.duration(120)}
+                  >
+                    <ComposerAttachmentStrip
+                      environmentId={props.environmentId}
+                      attachments={stripAttachments}
+                      onRemove={voiceInput.isBusy ? () => undefined : props.onRemoveDraftImage}
+                      onPressPreview={voiceInput.isBusy ? undefined : onPressPreview}
+                      onPressVideo={voiceInput.isBusy ? undefined : onPressVideo}
+                      onPressDocument={
+                        voiceInput.isBusy
+                          ? undefined
+                          : (attachment) =>
+                              openDraftDocument({
+                                attachmentId: attachment.id,
+                                name: attachment.name,
+                                mimeType: attachment.mimeType,
+                                sizeBytes: attachment.sizeBytes,
+                              })
+                      }
+                    />
+                  </Animated.View>
+                ) : null}
+                <Animated.View
+                  className={isExpanded ? "px-[14px]" : "min-w-0 flex-1 px-[4px]"}
+                  layout={COMPOSER_LAYOUT_TRANSITION}
+                >
+                  <ComposerEditor
+                    draftKey={composerDraftKey}
+                    environmentId={props.environmentId}
+                    onOpenMention={(path) => {
+                      Keyboard.dismiss();
+                      navigation.navigate("ThreadFile", {
+                        environmentId: String(props.environmentId),
+                        threadId: String(props.selectedThread.id),
+                        path: fileRoutePathSegments(path),
+                      });
+                    }}
+                    onOpenAttachment={openDraftDocument}
+                    // A rested composer full of chips left almost nowhere to tap to start typing:
+                    // every chip opened its file instead. Collapsed, they focus the editor.
+                    chipsInert={!isExpanded}
+                    onInertChipPress={() => inputRef.current?.focus()}
+                    ref={inputRef}
+                    multiline
+                    value={props.draftMessage}
+                    readOnly={voiceInput.freezesEditor}
+                    skills={composerMenu.skills}
+                    selection={composerMenu.selection}
+                    onChangeText={props.onChangeDraftMessage}
+                    onSelectionChange={composerMenu.onSelectionChange}
+                    onPasteImages={(uris) => void props.onNativePasteImages(uris)}
+                    onPasteText={(paste) => {
+                      const insertPaste = () => {
+                        const insertion = replaceTextSelection({
+                          value: paste.value,
+                          selection: paste.selection,
+                          text: paste.text,
+                        });
+                        const selection = { start: insertion.cursor, end: insertion.cursor };
+                        props.onChangeDraftMessage(insertion.value);
+                        composerMenu.onSelectionChange(selection);
+                      };
+                      const capabilities = props.serverConfig?.environment.capabilities;
+                      const advertisedMax =
+                        capabilities?.attachmentUploads === true
+                          ? capabilities.fileAttachments?.maxUploadBytes
+                          : undefined;
+                      const maxBytes =
+                        advertisedMax === undefined
+                          ? null
+                          : clampFileAttachmentUploadBytes(advertisedMax);
+                      const wouldExceedInputLimit =
+                        paste.value.length -
+                          Math.max(0, paste.selection.end - paste.selection.start) +
+                          paste.text.length >
+                        PROVIDER_SEND_TURN_MAX_INPUT_CHARS;
+                      const canAttach =
+                        maxBytes !== null &&
+                        countComposerDraftAttachmentsAfterSelection(composerDraftKey, {
+                          text: paste.value,
+                          ...paste.selection,
+                        }) < PROVIDER_SEND_TURN_MAX_ATTACHMENTS &&
+                        new TextEncoder().encode(paste.text).byteLength <= maxBytes;
+                      if (
+                        pastedTextDisposition({
+                          text: paste.text,
+                          wouldExceedInputLimit,
+                          canAttach: true,
+                        }) === "attachment"
+                      ) {
+                        if (canAttach) {
+                          pendingPastedTextAttachmentCountRef.current += 1;
+                          setPendingPastedTextAttachmentCount(
+                            pendingPastedTextAttachmentCountRef.current,
+                          );
+                          const finishAttachment = () => {
+                            pendingPastedTextAttachmentCountRef.current = Math.max(
+                              0,
+                              pendingPastedTextAttachmentCountRef.current - 1,
+                            );
+                            setPendingPastedTextAttachmentCount(
+                              pendingPastedTextAttachmentCountRef.current,
+                            );
+                          };
+                          void props
+                            .onNativePasteText(paste)
+                            .then(finishAttachment, finishAttachment);
+                        } else if (!wouldExceedInputLimit) {
+                          insertPaste();
+                        } else {
+                          Alert.alert(
+                            wouldExceedInputLimit
+                              ? "Pasted text is too large for this message"
+                              : "Could not attach pasted text",
+                            wouldExceedInputLimit
+                              ? "Remove some text or an attachment, then paste again."
+                              : "Remove an attachment or use a smaller paste, then try again.",
+                          );
+                        }
+                        return;
+                      }
+                      insertPaste();
+                    }}
+                    placeholder={props.placeholder}
+                    onFocus={handleFocus}
+                    onBlur={handleBlur}
+                    // Command-Return sends the other way, matching web's Mod+Enter.
+                    onSubmit={(alternate) =>
+                      void handleSend(
+                        alternate && sendPresentation.alternate !== null
+                          ? sendPresentation.alternate
+                          : undefined,
+                      )
+                    }
+                    submitTitle={sendPresentation.label}
+                    alternateSubmitTitle={
+                      sendPresentation.alternate === null
+                        ? sendPresentation.label
+                        : FOLLOW_UP_ACTION_LABEL[sendPresentation.alternate]
+                    }
+                    scrollEnabled={isExpanded}
+                    // Android: collapsed single line centers natively (gravity) in
+                    // a pill-height box matching the send button; iOS keeps insets.
+                    singleLineCentered={!isExpanded}
+                    contentInsetVertical={isExpanded || Platform.OS === "android" ? 0 : 6}
+                    style={
+                      isExpanded
+                        ? {
+                            minHeight: 72,
+                            maxHeight: 160,
+                            paddingVertical: 4,
+                          }
+                        : {
+                            height: 36,
+                          }
+                    }
+                    textStyle={{
+                      ...bodyText,
+                      color: foregroundColor,
+                    }}
+                  />
+                </Animated.View>
+                {!isExpanded && stripAttachments.length > 0 ? (
+                  <View className="flex-row gap-1 pl-1">
+                    {stripAttachments.slice(0, 3).map((attachment) => (
+                      <ComposerAttachmentThumbnail
+                        environmentId={props.environmentId}
+                        key={attachment.id}
+                        attachment={attachment}
+                        size={30}
+                        borderRadius={8}
+                        compact
+                        onPressPreview={onPressPreview}
+                        onPressVideo={onPressVideo}
+                      />
+                    ))}
+                    {stripAttachments.length > 3 ? (
+                      <View className="size-[30px] items-center justify-center rounded-lg bg-subtle-strong">
+                        <Text className="text-foreground-muted text-2xs font-t3-bold">
+                          +{stripAttachments.length - 3}
+                        </Text>
+                      </View>
+                    ) : null}
                   </View>
                 ) : null}
-              </View>
-            ) : null}
-            {!isExpanded ? (
-              <View className="flex-row items-center">
-                <ComposerDictationStartAction
-                  state={voiceInput.state}
-                  isAvailable={voiceInput.isAvailable}
-                  onStart={voiceInput.start}
-                  onCancel={voiceInput.cancel}
-                />
-                {showStopAction ? (
-                  <ComposerActionButton
-                    accessibilityLabel="Stop agent"
-                    icon="stop.fill"
-                    variant="danger"
-                    onPress={props.onStopThread}
-                  />
-                ) : (
-                  <SendActionButton
-                    accessibilityLabel={sendBlockedReason ?? sendLabel}
-                    presentation={sendPresentation}
-                    disabled={!canSend}
-                    onSend={handleSend}
-                  />
-                )}
-              </View>
-            ) : null}
-            {isExpanded ? <View className="h-1" /> : null}
-          </ComposerDictationDraftContent>
-          <Animated.View
-            accessibilityElementsHidden={!isToolbarVisible}
-            collapsable={false}
-            importantForAccessibility={isToolbarVisible ? "auto" : "no-hide-descendants"}
-            layout={COMPOSER_LAYOUT_TRANSITION}
-            pointerEvents={isToolbarVisible ? "auto" : "none"}
-            style={
-              isExpanded
-                ? undefined
-                : {
-                    position: "absolute",
-                    bottom: 2,
-                    left: 0,
-                    right: 0,
-                  }
-            }
-          >
-            <ComposerDictationToolbar
-              showsDictation={isVoiceInputPresented}
-              visible={isToolbarVisible}
-            >
-              <ComposerToolbarRow
-                paddingBottom={0}
-                paddingHorizontal={0}
-                paddingTop={0}
-                style={{ gap: 0 }}
-              >
-                <ComposerDictationCancelAction
-                  presentation={voicePresentation}
-                  onCancel={voiceInput.cancel}
-                />
-                {isVoiceInputPresented ? (
-                  <ComposerDictationStatus
-                    audioLevels={voiceInput.audioLevels}
-                    elapsedSeconds={voiceInput.elapsedSeconds}
-                    phase={voiceInput.state.phase}
-                    presentation={voicePresentation}
-                    onDismissError={voiceInput.cancel}
-                  />
-                ) : (
-                  <View className="min-w-0 flex-1 flex-row items-center justify-between">
-                    <ComposerAttachmentButton
-                      supportsFiles={Boolean(
-                        props.serverConfig?.environment.capabilities.fileAttachments,
-                      )}
-                      onPickMedia={props.onPickDraftMedia}
-                      onPickFiles={props.onPickDraftFiles}
+                {!isExpanded ? (
+                  <View className="flex-row items-center">
+                    <ComposerInlineControl
+                      accessibilityLabel="Model and reasoning settings"
+                      label={currentModelOption?.label ?? currentModelSelection.model}
+                      maxWidth={80}
+                      onPress={openSettings}
                     />
-                    <View className="min-w-0 shrink">
-                      <ComposerInlineControl
-                        accessibilityLabel="Model and reasoning settings"
-                        emphasized
-                        renderIcon={(size) => (
-                          <ProviderIcon
-                            iconUrl={currentModelOption?.providerIconUrl}
-                            provider={currentModelOption?.providerDriver}
-                            size={size}
-                          />
-                        )}
-                        label={currentModelOption?.label ?? currentModelSelection.model}
-                        maxWidth="100%"
-                        onPress={openSettings}
+                    {!voiceNoteBusy ? voiceNoteControl : null}
+                    <ComposerDictationStartAction
+                      state={voiceInput.state}
+                      isAvailable={voiceInput.isAvailable}
+                      onStart={voiceInput.start}
+                      onCancel={voiceInput.cancel}
+                    />
+                    {showStopAction ? (
+                      <ComposerActionButton
+                        accessibilityLabel="Stop agent"
+                        icon="stop.fill"
+                        variant="danger"
+                        onPress={props.onStopThread}
                       />
-                    </View>
+                    ) : (
+                      <SendActionButton
+                        accessibilityLabel={sendBlockedReason ?? sendLabel}
+                        presentation={sendPresentation}
+                        disabled={!canSend}
+                        onSend={handleSend}
+                      />
+                    )}
                   </View>
-                )}
-                <View className="shrink-0 flex-row items-center">
-                  <ComposerDictationPrimaryAction
-                    state={voiceInput.state}
-                    presentation={voicePresentation}
-                    isAvailable={voiceInput.isAvailable}
-                    onStart={voiceInput.start}
-                    onConfirm={voiceInput.stop}
-                    onCancel={voiceInput.cancel}
-                  />
-                  {showStopAction ? (
-                    <ComposerActionButton
-                      accessibilityLabel="Stop agent"
-                      icon="stop.fill"
-                      variant="danger"
-                      onPress={props.onStopThread}
-                    />
-                  ) : voicePresentation.showsSend ? (
-                    <SendActionButton
-                      accessibilityLabel={sendBlockedReason ?? sendLabel}
-                      presentation={sendPresentation}
-                      disabled={!canSend}
-                      onSend={handleSend}
-                    />
-                  ) : null}
-                </View>
-              </ComposerToolbarRow>
-            </ComposerDictationToolbar>
-          </Animated.View>
-        </ComposerSurface>
+                ) : null}
+                {isExpanded ? <View className="h-1" /> : null}
+              </ComposerDictationDraftContent>
+              <Animated.View
+                accessibilityElementsHidden={!isToolbarVisible && !voiceNoteBusy}
+                collapsable={false}
+                importantForAccessibility={
+                  isToolbarVisible || voiceNoteBusy ? "auto" : "no-hide-descendants"
+                }
+                layout={COMPOSER_LAYOUT_TRANSITION}
+                pointerEvents={isToolbarVisible || voiceNoteBusy ? "auto" : "none"}
+                style={
+                  isExpanded
+                    ? undefined
+                    : {
+                        position: "absolute",
+                        bottom: 2,
+                        left: 0,
+                        right: 0,
+                      }
+                }
+              >
+                <ComposerDictationToolbar
+                  showsDictation={isVoiceInputPresented}
+                  visible={isToolbarVisible || voiceNoteBusy}
+                >
+                  <ComposerToolbarRow
+                    paddingBottom={0}
+                    paddingHorizontal={0}
+                    paddingTop={0}
+                    style={{ gap: 0 }}
+                  >
+                    {voiceNoteBusy ? (
+                      voiceNoteControl
+                    ) : (
+                      <>
+                        <ComposerDictationCancelAction
+                          presentation={voicePresentation}
+                          onCancel={voiceInput.cancel}
+                        />
+                        {isVoiceInputPresented ? (
+                          <ComposerDictationStatus
+                            audioLevels={voiceInput.audioLevels}
+                            elapsedSeconds={voiceInput.elapsedSeconds}
+                            phase={voiceInput.state.phase}
+                            presentation={voicePresentation}
+                            onDismissError={voiceInput.cancel}
+                          />
+                        ) : (
+                          <View className="min-w-0 flex-1 flex-row items-center justify-between">
+                            <ComposerAttachmentButton
+                              supportsFiles={Boolean(
+                                props.serverConfig?.environment.capabilities.fileAttachments,
+                              )}
+                              onPickMedia={props.onPickDraftMedia}
+                              onPickFiles={props.onPickDraftFiles}
+                            />
+                            <View className="min-w-0 shrink">
+                              <ComposerInlineControl
+                                accessibilityLabel="Model and reasoning settings"
+                                emphasized
+                                renderIcon={(size) => (
+                                  <ProviderIcon
+                                    iconUrl={currentModelOption?.providerIconUrl}
+                                    provider={currentModelOption?.providerDriver}
+                                    size={size}
+                                  />
+                                )}
+                                label={currentModelOption?.label ?? currentModelSelection.model}
+                                maxWidth="100%"
+                                onPress={openSettings}
+                              />
+                            </View>
+                          </View>
+                        )}
+                        <View className="shrink-0 flex-row items-center">
+                          {isExpanded ? voiceNoteControl : null}
+                          <ComposerDictationPrimaryAction
+                            state={voiceInput.state}
+                            presentation={voicePresentation}
+                            isAvailable={voiceInput.isAvailable}
+                            onStart={voiceInput.start}
+                            onConfirm={voiceInput.stop}
+                            onCancel={voiceInput.cancel}
+                          />
+                          {showStopAction ? (
+                            <ComposerActionButton
+                              accessibilityLabel="Stop agent"
+                              icon="stop.fill"
+                              variant="danger"
+                              onPress={props.onStopThread}
+                            />
+                          ) : voicePresentation.showsSend ? (
+                            <SendActionButton
+                              accessibilityLabel={sendBlockedReason ?? sendLabel}
+                              presentation={sendPresentation}
+                              disabled={!canSend}
+                              onSend={handleSend}
+                            />
+                          ) : null}
+                        </View>
+                      </>
+                    )}
+                  </ComposerToolbarRow>
+                </ComposerDictationToolbar>
+              </Animated.View>
+            </ComposerSurface>
+          )}
+        </ComposerVoiceNote>
       </Animated.View>
 
       <VideoPreviewModal source={previewVideo} onRequestClose={closePreview} />

@@ -6,7 +6,7 @@ import {
   type RecorderState,
 } from "expo-audio";
 import { File } from "expo-file-system";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AppState, Platform, View } from "react-native";
 import { ComposerActionButton } from "../../components/ComposerToolbar";
 import { AppText as Text } from "../../components/AppText";
@@ -25,6 +25,8 @@ export function ComposerVoiceNote(props: {
   readonly sendBlocked: boolean;
   readonly onSend: () => Promise<unknown>;
   readonly onBusyChange?: (busy: boolean) => void;
+  readonly enabled?: boolean;
+  readonly children?: (busy: boolean, control: ReactNode) => ReactNode;
 }) {
   const [state, setState] = useState<{ phase: VoiceNotePhase; error: string | null }>({
     phase: "idle",
@@ -153,38 +155,42 @@ export function ComposerVoiceNote(props: {
       setAttaching(false);
     }
   }
-  return (
-    <View className="flex-row items-center">
-      {state.phase === "recording" ? (
-        <>
+  const control =
+    props.enabled === false ? null : (
+      <View
+        className={busy ? "flex-1 flex-row items-center justify-between" : "flex-row items-center"}
+      >
+        {state.phase === "recording" ? (
+          <>
+            <ComposerActionButton
+              accessibilityLabel="Cancel voice note"
+              icon="xmark"
+              onPress={() => void session.cancel()}
+            />
+            <Text className="text-xs text-foreground">
+              {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}
+            </Text>
+            <ComposerActionButton
+              accessibilityLabel="Send voice note"
+              icon="arrow.up"
+              variant="primary"
+              onPress={() => void finish()}
+            />
+          </>
+        ) : (
           <ComposerActionButton
-            accessibilityLabel="Cancel voice note"
-            icon="xmark"
-            onPress={() => void session.cancel()}
+            accessibilityLabel={busy ? "Preparing voice note" : "Record voice note"}
+            icon="mic"
+            disabled={props.disabled || busy || pendingId !== null}
+            onPress={() => void session.start()}
           />
-          <Text className="text-xs text-foreground">
-            {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}
+        )}
+        {state.error ? (
+          <Text accessibilityRole="alert" className="max-w-48 text-xs text-foreground">
+            {state.error}
           </Text>
-          <ComposerActionButton
-            accessibilityLabel="Send voice note"
-            icon="arrow.up"
-            variant="primary"
-            onPress={() => void finish()}
-          />
-        </>
-      ) : (
-        <ComposerActionButton
-          accessibilityLabel={busy ? "Preparing voice note" : "Record voice note"}
-          icon="mic"
-          disabled={props.disabled || busy || pendingId !== null}
-          onPress={() => void session.start()}
-        />
-      )}
-      {state.error ? (
-        <Text accessibilityRole="alert" className="max-w-48 text-xs text-foreground">
-          {state.error}
-        </Text>
-      ) : null}
-    </View>
-  );
+        ) : null}
+      </View>
+    );
+  return props.children ? props.children(busy, control) : control;
 }
