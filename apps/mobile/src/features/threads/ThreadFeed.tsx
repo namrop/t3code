@@ -130,6 +130,8 @@ import { CopyTextButton } from "../../components/CopyTextButton";
 import { parseReviewCommentMessageSegments } from "../review/reviewCommentSelection";
 import type { ReviewDiffTheme } from "../review/shikiReviewHighlighter";
 import { VoiceNoteAudio } from "../../components/VoiceNoteAudio";
+import { MessageListenButton } from "../../components/MessageListenButton";
+import { VoiceNoteTranscript } from "../../components/VoiceNoteTranscript";
 import {
   ReviewCommentCard,
   useReviewCommentColors,
@@ -1514,6 +1516,7 @@ function renderFeedEntry(
     | "workspaceRoot"
   > & {
     readonly copiedRowId: string | null;
+    readonly transcripts: ReadonlyMap<RunId, ReadonlyArray<OrchestrationV2ProjectedTurnItem>>;
     readonly expandedWorkRows: Record<string, boolean>;
     readonly workRowSizing: ReturnType<typeof deriveThreadWorkLogSizing>;
     readonly workGroupScrollPositions: Map<string, ThreadWorkGroupScrollPosition>;
@@ -1750,6 +1753,18 @@ function renderFeedEntry(
                 })}
               </View>
             ) : null}
+            {message.runId &&
+            message.attachments.some((attachment) => attachment.mimeType?.startsWith("audio/"))
+              ? props.transcripts
+                  .get(message.runId)
+                  ?.map((row) => (
+                    <VoiceNoteTranscript
+                      key={row.sourceItemId}
+                      environmentId={props.environmentId}
+                      row={row}
+                    />
+                  ))
+              : null}
             {message.text.trim().length > 0 ? (
               <MarkdownImageAvailableWidthContext
                 value={props.userBubbleMaxWidth - USER_BUBBLE_HORIZONTAL_PADDING * 2}
@@ -1896,6 +1911,13 @@ function renderFeedEntry(
         })}
         {showAssistantMeta ? (
           <View className="mt-1 flex-row items-center gap-1">
+            {renderedText.trim() ? (
+              <MessageListenButton
+                environmentId={props.environmentId}
+                messageId={message.id}
+                text={renderedText}
+              />
+            ) : null}
             {message.projectedItem ? (
               <AssistantForkButton
                 environmentId={props.environmentId}
@@ -2129,6 +2151,26 @@ function ThreadFeedPlaceholder(props: {
 }
 
 export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
+  const transcripts = useMemo(() => {
+    const result = new Map<RunId, OrchestrationV2ProjectedTurnItem[]>();
+    for (const entry of props.feed) {
+      if (entry.type !== "activity-group") continue;
+      for (const activity of entry.activities) {
+        const item = activity.projectedItem.item;
+        if (
+          item.type !== "dynamic_tool" ||
+          item.toolName !== "voice_note_transcript" ||
+          !activity.runId
+        )
+          continue;
+        const rows = result.get(activity.runId) ?? [];
+        if (!rows.some((row) => row.sourceItemId === activity.projectedItem.sourceItemId))
+          rows.push(activity.projectedItem);
+        result.set(activity.runId, rows);
+      }
+    }
+    return result;
+  }, [props.feed]);
   const navigation = useNavigation();
   const { themeAppearance } = useAppearancePreferences();
   const copyFeedbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2922,6 +2964,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       >
         <ThreadMediaVisibility>
           {renderFeedEntry(info, {
+            transcripts,
             environmentId: props.environmentId,
             dispatchingMessageId: props.dispatchingMessageId,
             onEditPendingMessage: props.onEditPendingMessage,
@@ -2973,6 +3016,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       props.dispatchingMessageId,
       props.onEditPendingMessage,
       copiedRowId,
+      transcripts,
       disclosureToggleSettling,
       expandedWorkRows,
       workRowSizing,
