@@ -46,8 +46,11 @@ export class VoiceNoteSession {
   private requestingPermission = false;
   // Android's permission activity pauses our activity, even for an existing
   // grant. That pause is not an abandoned recording. Unmount still cancels.
-  async onAppBackground(): Promise<void> {
-    if (!this.requestingPermission) await this.cancel();
+  async onAppBackground(): Promise<string | null> {
+    if (this.requestingPermission) return null;
+    if (this.phase === "recording") return this.finish();
+    if (this.phase === "preparing") await this.cancel();
+    return null;
   }
   constructor(private readonly dependencies: Dependencies) {}
   private update(phase: VoiceNotePhase, error: string | null = null) {

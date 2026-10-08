@@ -101,12 +101,12 @@ describe("native voice notes", () => {
     expect(session.phase).toBe("recording");
     expect(calls).toEqual(["prepare", "record"]);
   });
-  it("still cancels a recording when the app really backgrounds", async () => {
+  it("finalizes and retains a recording when the app really backgrounds", async () => {
     const { session, calls } = setup();
     await session.start();
-    await session.onAppBackground();
+    expect(await session.onAppBackground()).toBe("file:///note.m4a");
     expect(session.phase).toBe("idle");
-    expect(calls).toEqual(["prepare", "record", "stop", "delete", "release"]);
+    expect(calls).toEqual(["prepare", "record", "stop", "release"]);
   });
   it("cancellation during permission cannot start recording later", async () => {
     let grant!: (value: boolean) => void;

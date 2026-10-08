@@ -6,6 +6,7 @@ import {
   type RecorderState,
 } from "expo-audio";
 import { File } from "expo-file-system";
+import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AppState, Platform, View } from "react-native";
 import { ComposerActionButton } from "../../components/ComposerToolbar";
@@ -85,13 +86,27 @@ export function ComposerVoiceNote(props: {
   }, [busy, props.onBusyChange]);
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (next) => {
-      if (next === "background") void session.onAppBackground();
+      if (next === "background") void finish(false, true);
     });
     return () => {
       subscription.remove();
-      void session.cancel();
+      void finish(false, true);
     };
   }, [session]);
+  useEffect(() => {
+    if (state.phase !== "recording") return;
+    const tag = `voice-note:${props.draftKey}`;
+    let released = false;
+    void activateKeepAwakeAsync(tag)
+      .then(() => {
+        if (released) deactivateKeepAwake(tag);
+      })
+      .catch(() => {});
+    return () => {
+      released = true;
+      deactivateKeepAwake(tag);
+    };
+  }, [state.phase, props.draftKey]);
   useEffect(() => {
     if (state.phase !== "recording") return;
     setElapsed(0);
@@ -120,14 +135,15 @@ export function ComposerVoiceNote(props: {
       }),
     );
   }, [pendingId, attaching, props.sendBlocked, props.onSend, props.draftKey]);
-  async function finish() {
-    if (session.phase !== "recording") return;
+  async function finish(send = true, background = false) {
+    if (session.phase !== "recording" && !background) return;
     setAttaching(true);
     let uri: string | null = null;
+    let saved = false;
+    const captured = latest.current;
     try {
-      uri = await session.finish();
+      uri = background ? await session.onAppBackground() : await session.finish();
       if (!uri) return;
-      const captured = latest.current;
       const attachment = await createComposerFileAttachment({
         uri,
         name: `Voice note ${new Date().toISOString().replace(/[:]/g, ".")}.m4a`,
@@ -141,14 +157,15 @@ export function ComposerVoiceNote(props: {
         }) !== 0
       )
         throw new Error("The draft has too many attachments.");
-      setPendingId(attachment.id);
+      saved = true;
+      if (send) setPendingId(attachment.id);
     } catch (error) {
       setState({
         phase: "error",
         error: error instanceof Error ? error.message : "Could not save the voice note.",
       });
     } finally {
-      if (uri) {
+      if (uri && saved) {
         const file = new File(uri);
         if (file.exists) file.delete();
       }
