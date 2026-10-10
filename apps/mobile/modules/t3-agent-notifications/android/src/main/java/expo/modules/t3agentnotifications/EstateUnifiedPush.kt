@@ -214,6 +214,16 @@ object EstateUnifiedPush {
     }
   }
 
+  private fun presentation(data: JSONObject, key: String, fallback: String, limit: Int): String {
+    val value = (data.opt(key) as? String).orEmpty()
+      .replace(Regex("[\\p{Cc}\\u202A-\\u202E\\u2066-\\u2069]+"), " ")
+      .replace(Regex("[\\s\\p{Z}]+"), " ").trim()
+    if (value.isEmpty()) return fallback
+    if (value.length <= limit) return value
+    val end = if (value[limit - 2].isHighSurrogate()) limit - 2 else limit - 1
+    return value.substring(0, end).trimEnd() + "…"
+  }
+
   @Synchronized
   fun receive(context: Context, bytes: ByteArray) {
     try {
@@ -226,7 +236,7 @@ object EstateUnifiedPush {
       val kind = data.getString("kind")
       val bodies = mapOf("approval" to "An agent needs your approval.", "input" to "An agent needs your input.",
         "completed" to "The agent run completed.", "failed" to "The agent run failed.")
-      val body = bodies[kind] ?: return
+      val fallbackBody = bodies[kind] ?: return
       if (!JSONObject(p.getString("preferences", "{}")!!).optBoolean(kind, false)) return
       val timestamp = (data.getDouble("occurred_at") * 1000).toLong()
       if (System.currentTimeMillis() - timestamp !in -60000L..600000L) return
@@ -239,8 +249,10 @@ object EstateUnifiedPush {
       val device = p.getString("device", "")!!
       AgentNotifications.configure(context, device, "estate:$device", p.getString("scheme", "t3code-sol")!!, false)
       AgentNotifications.receive(context, mapOf("device_id" to device, "user_id" to "estate:$device",
-        "updated_at" to timestamp.toString(), "alert_id" to id, "alert_title" to "T3 Code (Sol)",
-        "alert_body" to body, "alert_path" to route, "alert_group" to route))
+        "updated_at" to timestamp.toString(), "alert_id" to id,
+        "alert_title" to presentation(data, "title", "T3 Code (Sol)", 80),
+        "alert_body" to presentation(data, "body", fallbackBody, 160),
+        "alert_path" to route, "alert_group" to route))
       p.edit().putString("seen", (seen.takeLast(255) + id).joinToString("\n")).commit()
     } catch (_: Exception) { /* malformed messages never reach notification presentation */ }
   }

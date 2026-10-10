@@ -40,8 +40,34 @@ class EstateUnifiedPushTest {
     EstateUnifiedPushReceiver().onReceive(context, Intent(EstateUnifiedPush.MESSAGE)
       .putExtra("token", token).putExtra("bytesMessage", data.toString().toByteArray()))
   }
-  @Test fun validPushUsesAppPresentationAndRedactsUntrustedText() {
-    receive(payload())
+  @Test fun validPushPresentsTheSourceThreadAndEventDetail() {
+    receive(payload().put("title", "Failed · Phone notifications")
+      .put("body", "Oasis · Android build failed: signing key was unavailable."))
+    val notification = manager.activeNotifications.single().notification
+    assertEquals("Failed · Phone notifications", notification.extras.getString("android.title"))
+    assertEquals("Oasis · Android build failed: signing key was unavailable.", notification.extras.getString("android.text"))
+    assertEquals(android.app.Notification.VISIBILITY_PRIVATE, notification.visibility)
+  }
+  @Test fun presentationNormalizesControlsAndWhitespace() {
+    receive(payload().put("title", "Failed\n\t Phone\u202Enotifications")
+      .put("body", "Oasis\r\nBuild\u0007 failed   during signing."))
+    val notification = manager.activeNotifications.single().notification
+    assertEquals("Failed Phone notifications", notification.extras.getString("android.title"))
+    assertEquals("Oasis Build failed during signing.", notification.extras.getString("android.text"))
+  }
+  @Test fun longPresentationIsBoundedWithAnEllipsisWithoutBrokenSurrogates() {
+    receive(payload().put("title", "x".repeat(78) + "\uD83D\uDE00" + "tail")
+      .put("body", "y".repeat(158) + "\uD83D\uDE00" + "tail"))
+    val notification = manager.activeNotifications.single().notification
+    val title = notification.extras.getString("android.title")!!
+    val body = notification.extras.getString("android.text")!!
+    assertTrue(title.length <= 80); assertTrue(body.length <= 160)
+    assertTrue(title.endsWith("…")); assertTrue(body.endsWith("…"))
+    assertFalse(title[title.length - 2].isHighSurrogate())
+    assertFalse(body[body.length - 2].isHighSurrogate())
+  }
+  @Test fun blankOrNonStringPresentationFallsBackToAnHonestEventLabel() {
+    receive(payload().put("title", JSONObject().put("wrong", "type")).put("body", " \n\t "))
     val notification = manager.activeNotifications.single().notification
     assertEquals("T3 Code (Sol)", notification.extras.getString("android.title"))
     assertEquals("The agent run failed.", notification.extras.getString("android.text"))

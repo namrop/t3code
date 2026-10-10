@@ -10,6 +10,10 @@ const state = (phase: AgentAwarenessState["phase"]) =>
     threadId: "thread",
     phase,
     updatedAt: "2026-10-07T01:00:00Z",
+    projectTitle: "Example project",
+    threadTitle: "Release notes thread",
+    headline: "Agent failed",
+    detail: "The agent run failed.",
     deepLink: "/threads/env/thread",
   }) as AgentAwarenessState;
 const journals: EventJournal[] = [];
@@ -79,7 +83,10 @@ describe("durable read-only T3 source journal", () => {
       received = "";
       await j.flush(url, "test-token");
       expect(pending(j)).toHaveLength(0);
-      expect(JSON.parse(received).body).toBe("The agent run failed.");
+      expect(JSON.parse(received)).toMatchObject({
+        title: "Release notes thread",
+        body: "Example project · Agent failed — The agent run failed.",
+      });
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }

@@ -4,7 +4,8 @@ This fork's account-free, directly paired Android variant is **T3 Code (Sol)**,
 package `zone.pharos.t3code`, scheme `t3code-sol`. It can coexist with the store
 app. Set `APP_VARIANT=sol` for both prebuild and Gradle/Metro: the variant forces
 OTA, Clerk, relay registration and Firebase configuration off, even if ambient
-cloud settings exist. Push notifications are intentionally not configured.
+cloud settings exist. Private Sol alerts use ntfy/UnifiedPush with explicit app
+opt-in; see `../../docs/operations/estate-push-v1.md`.
 
 ## Requirements
 
