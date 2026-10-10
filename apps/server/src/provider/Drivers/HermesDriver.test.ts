@@ -99,6 +99,27 @@ describe("HermesDriver", () => {
                       currentModelId: "anthropic:fixture",
                       availableModels: [{ modelId: "anthropic:fixture", name: "Fixture" }],
                     },
+                    configOptions: [
+                      {
+                        id: "mode",
+                        name: "Mode",
+                        category: "mode",
+                        type: "select",
+                        currentValue: "default",
+                        options: [{ value: "default", name: "Default" }],
+                      },
+                      {
+                        id: "reasoning",
+                        name: "Reasoning",
+                        category: "thought_level",
+                        type: "select",
+                        currentValue: "default",
+                        options: [
+                          { value: "default", name: "Default (xhigh)" },
+                          { value: "low", name: "Low" },
+                        ],
+                      },
+                    ],
                   },
                 },
               },
@@ -138,6 +159,19 @@ describe("HermesDriver", () => {
         expect(snapshot.models).toContainEqual(
           expect.objectContaining({ slug: "custom:fixture", isCustom: true }),
         );
+        // Hermes's reasoning setting reaches every model, custom ones included,
+        // as the composer's Reasoning picker; its mode setting does not.
+        for (const model of snapshot.models) {
+          expect(model.capabilities?.optionDescriptors?.map((d) => d.id)).toEqual(["reasoning"]);
+        }
+        expect(snapshot.models[0]?.capabilities?.optionDescriptors?.[0]).toMatchObject({
+          type: "select",
+          currentValue: "default",
+          options: [
+            { id: "default", label: "Default (xhigh)" },
+            { id: "low", label: "Low" },
+          ],
+        });
         yield* instance.snapshot.refresh;
         expect((yield* instance.snapshot.getSnapshot).models).toEqual(snapshot.models);
       }).pipe(Effect.provide(testLayer), Effect.scoped),

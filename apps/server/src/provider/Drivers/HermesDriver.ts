@@ -21,6 +21,7 @@ import * as ServerConfig from "../../config.ts";
 import * as IdAllocator from "../../orchestration-v2/IdAllocator.ts";
 import { makeHermesAdapterV2 } from "../../orchestration-v2/Adapters/HermesAdapterV2.ts";
 import {
+  buildHermesModelCapabilities,
   buildHermesModelsFromSessionModelState,
   HERMES_DEFAULT_MODEL_SLUG,
   HERMES_MODEL_CAPABILITIES,
@@ -132,7 +133,14 @@ export const HermesDriver: ProviderDriver<HermesSettings, HermesDriverEnv> = {
         Effect.gen(function* () {
           const current = yield* Ref.get(snapshotRef);
           const now = yield* Clock.currentTimeMillis;
-          const models = buildHermesModelsFromSessionModelState(started.sessionSetupResult.models);
+          // Hermes's reasoning setting, offered on every model (see buildHermesModelCapabilities).
+          const capabilities = buildHermesModelCapabilities(
+            started.sessionSetupResult.configOptions,
+          );
+          const models = buildHermesModelsFromSessionModelState(
+            started.sessionSetupResult.models,
+            capabilities,
+          );
           lastSuccessfulProbe = now;
           yield* publish({
             ...current,
@@ -145,9 +153,9 @@ export const HermesDriver: ProviderDriver<HermesSettings, HermesDriverEnv> = {
             supportsAudioPrompts:
               started.initializeResult.agentCapabilities?.promptCapabilities?.audio === true,
             models: providerModelsFromSettings(
-              models.length ? models : FALLBACK_MODELS,
+              models.length ? models : FALLBACK_MODELS.map((model) => ({ ...model, capabilities })),
               settings.customModels,
-              HERMES_MODEL_CAPABILITIES,
+              capabilities,
             ),
           });
         });

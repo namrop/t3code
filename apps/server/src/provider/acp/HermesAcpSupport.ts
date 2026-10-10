@@ -1,5 +1,6 @@
 import {
   type HermesSettings,
+  type ModelCapabilities,
   ProviderDriverKind,
   type RuntimeMode,
   type ServerProviderModel,
@@ -13,11 +14,32 @@ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import type * as AcpSchema from "effect-acp/compat";
 import * as AcpErrors from "effect-acp/errors";
 import * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
+import { acpProviderOptionDescriptors } from "./AcpSessionConfig.ts";
 
 export const HERMES_DEFAULT_MODEL_SLUG = "hermes-agent";
 export const HERMES_CANCEL_TIMEOUT_MS = 30_000;
 const DRIVER = ProviderDriverKind.make("hermes");
 export const HERMES_MODEL_CAPABILITIES = createModelCapabilities({ optionDescriptors: [] });
+
+/**
+ * Model options from the settings a Hermes session offers. Hermes lists its
+ * reasoning level (category `thought_level`) and its approval mode; only the
+ * reasoning level becomes a composer control, since the mode follows T3's
+ * runtime mode (`resolveHermesAcpModeId`). A chosen level reaches the
+ * session through `session/set_config_option` (AcpAdapterV2 applies option
+ * selections the live session advertises). A Hermes that offers no settings
+ * gets no controls.
+ */
+export function buildHermesModelCapabilities(
+  configOptions: ReadonlyArray<AcpSchema.SessionConfigOption> | null | undefined,
+): ModelCapabilities {
+  return createModelCapabilities({
+    optionDescriptors: acpProviderOptionDescriptors({
+      configOptions: (configOptions ?? []).filter((option) => option.category === "thought_level"),
+      modeState: undefined,
+    }),
+  });
+}
 
 export function buildHermesAcpSpawnInput(
   settings: Partial<Pick<HermesSettings, "binaryPath" | "homePath">> | null | undefined,
@@ -54,6 +76,7 @@ export function resolveHermesAcpBaseModelId(model: string | null | undefined): s
 
 export function buildHermesModelsFromSessionModelState(
   state: AcpSchema.SessionModelState | null | undefined,
+  capabilities: ModelCapabilities = HERMES_MODEL_CAPABILITIES,
 ): ReadonlyArray<ServerProviderModel> {
   const seen = new Set<string>();
   return (state?.availableModels ?? []).flatMap((model) => {
@@ -66,7 +89,7 @@ export function buildHermesModelsFromSessionModelState(
         name: model.name.trim() || slug,
         isCustom: false,
         ...(model.modelId.trim() === state?.currentModelId.trim() ? { isDefault: true } : {}),
-        capabilities: HERMES_MODEL_CAPABILITIES,
+        capabilities,
       },
     ];
   });

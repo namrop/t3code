@@ -4,6 +4,7 @@ import {
   buildHermesAcpSpawnInput,
   resolveHermesAcpModeId,
   applyHermesAcpModelSelection,
+  buildHermesModelCapabilities,
   buildHermesModelsFromSessionModelState,
 } from "../../provider/acp/HermesAcpSupport.ts";
 import {
@@ -92,6 +93,60 @@ describe("Hermes ACP compatibility", () => {
         resolveHermesAcpModeId(mode as Parameters<typeof resolveHermesAcpModeId>[0]),
       ),
     ).toEqual(["supervised", "dont_ask", "accept_edits", "dont_ask"]);
+  });
+  it("offers Hermes's reasoning setting as a model option and leaves its mode to the runtime mode", () => {
+    const capabilities = buildHermesModelCapabilities([
+      {
+        id: "mode",
+        name: "Mode",
+        category: "mode",
+        type: "select",
+        currentValue: "default",
+        options: [
+          { value: "default", name: "Default" },
+          { value: "supervised", name: "Supervised" },
+        ],
+      },
+      {
+        id: "reasoning",
+        name: "Reasoning",
+        description: "Reasoning effort for this session.",
+        category: "thought_level",
+        type: "select",
+        currentValue: "default",
+        options: [
+          { value: "default", name: "Default (xhigh)" },
+          { value: "none", name: "Off" },
+          { value: "low", name: "Low" },
+          { value: "xhigh", name: "Extra high" },
+        ],
+      },
+    ]);
+    expect(capabilities.optionDescriptors).toEqual([
+      {
+        id: "reasoning",
+        label: "Reasoning",
+        description: "Reasoning effort for this session.",
+        type: "select",
+        currentValue: "default",
+        options: [
+          { id: "default", label: "Default (xhigh)" },
+          { id: "none", label: "Off" },
+          { id: "low", label: "Low" },
+          { id: "xhigh", label: "Extra high" },
+        ],
+      },
+    ]);
+    // A Hermes without the setting (older build) offers no controls, as before.
+    expect(buildHermesModelCapabilities(undefined).optionDescriptors).toEqual([]);
+    const [model] = buildHermesModelsFromSessionModelState(
+      {
+        currentModelId: "anthropic:claude-opus-5-5",
+        availableModels: [{ modelId: "anthropic:claude-opus-5-5", name: "Opus" }],
+      },
+      capabilities,
+    );
+    expect(model?.capabilities).toEqual(capabilities);
   });
   it("keeps colon model ids and marks the native current model default", () => {
     expect(
