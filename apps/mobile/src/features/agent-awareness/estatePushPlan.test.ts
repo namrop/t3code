@@ -34,11 +34,25 @@ describe("local estate push opt-in and origin boundary", () => {
       estatePushPlan([{ ...sol, relayManaged: true }], { estatePushEnabled: true }),
     ).toBeNull();
   });
-  it("requires a bearer and fails closed on ambiguous Sol pairings", () => {
-    expect(estatePushPlan([{ ...sol, bearerToken: null }], { estatePushEnabled: true })).toBeNull();
+  it("defers while the opted-in Sol pairing has no live prepared bearer", () => {
     expect(
-      estatePushPlan([sol, { ...sol, bearerToken: "other" }], { estatePushEnabled: true }),
+      estatePushPlan([{ ...sol, bearerToken: null }], { estatePushEnabled: true }),
+    ).toBeUndefined();
+  });
+  it("still opts out when the user disables alerts during a connection pause", () => {
+    expect(
+      estatePushPlan([{ ...sol, bearerToken: null }], { estatePushEnabled: false }),
     ).toBeNull();
+  });
+  it("opts out when the saved Sol pairing is removed", () => {
+    expect(estatePushPlan([], { estatePushEnabled: true })).toBeNull();
+  });
+  it("fails closed on ambiguous saved Sol pairings, including a paused pairing", () => {
+    for (const bearerToken of ["other", null]) {
+      expect(
+        estatePushPlan([sol, { ...sol, bearerToken }], { estatePushEnabled: true }),
+      ).toBeNull();
+    }
   });
   it("preserves all four explicit per-event preferences", () => {
     const preferences = { approval: true, input: false, completed: false, failed: true };

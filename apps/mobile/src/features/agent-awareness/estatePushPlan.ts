@@ -17,12 +17,7 @@ export function estatePushPlan(
 ) {
   if (preferences.estatePushEnabled !== true) return null;
   const eligible = connections.filter((connection) => {
-    if (
-      !connection.bearerToken ||
-      connection.authenticationMethod === "dpop" ||
-      connection.relayManaged
-    )
-      return false;
+    if (connection.authenticationMethod === "dpop" || connection.relayManaged) return false;
     try {
       const url = new URL(connection.httpBaseUrl);
       return (
@@ -42,6 +37,10 @@ export function estatePushPlan(
   // This private v1 consumer targets one Sol pairing; ambiguous credentials are
   // not silently chosen. Other apps can add their own explicit origin/config.
   if (eligible.length !== 1) return null;
+  // The saved pairing survives a paused session, but its prepared bearer does
+  // not. Keep the native registration until credentials return; only opt-out
+  // or removal/ambiguity of the saved pairing should revoke it.
+  if (!eligible[0]!.bearerToken) return undefined;
   return {
     connection: eligible[0]!,
     preferences: preferences.estatePushPreferences ?? DEFAULT_ESTATE_PUSH_PREFERENCES,

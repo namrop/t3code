@@ -49,7 +49,7 @@ function getInstallationId(): Promise<string> {
 }
 let generation = 0;
 export async function reconcileEstatePush(plan: ReturnType<typeof estatePushPlan>): Promise<void> {
-  if (!supportsEstatePush()) return;
+  if (!supportsEstatePush() || plan === undefined) return;
   const expected = ++generation;
   if (!plan) {
     await native!.disableEstatePush();
