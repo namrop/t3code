@@ -33,7 +33,14 @@ const resolveShikiDependencyRoot = (packageName) => {
   return currentDir;
 };
 
-config.watchFolders = [...new Set([...(config.watchFolders ?? []), workspaceRoot])];
+// Reused dependencies can resolve outside an isolated worktree. Metro must watch
+// their real workspace as well as this worktree's application source.
+const dependencyWorkspaceRoot = path.dirname(
+  fs.realpathSync(path.join(workspaceRoot, "node_modules")),
+);
+config.watchFolders = [
+  ...new Set([...(config.watchFolders ?? []), workspaceRoot, dependencyWorkspaceRoot]),
+];
 config.resolver = {
   ...config.resolver,
   blockList: [
