@@ -108,6 +108,11 @@ export function makeHermesAcpAdapterFlavor(options: HermesAdapterV2Options): Acp
     projectToolCall: projectHermesToolCall,
     extractSubagentUpdate: extractHermesSubagentUpdate,
     supportsImagePrompts: true,
+    // Hermes ACP compacts on `/compress` (acp_adapter `_cmd_compress`): it
+    // summarizes the session in place, keeps the session id, and sends a
+    // usage update, so T3's next budget sees the smaller transcript.
+    supportsCompaction: true,
+    compactionCommand: "/compress",
   };
 }
 

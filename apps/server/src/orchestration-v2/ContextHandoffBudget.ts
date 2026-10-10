@@ -6,6 +6,8 @@ import type {
   OrchestrationV2ContextHandoff,
   OrchestrationV2HistoricalMessage,
   OrchestrationV2ProviderThread,
+  OrchestrationV2ProviderTurn,
+  OrchestrationV2RunAttempt,
   OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
 
@@ -135,6 +137,40 @@ export function handoffBudget(input: {
       window - native - current - Math.max(16_000, Math.ceil(window / 4)),
     ),
   );
+}
+
+/**
+ * Which turn items the current native transcript already holds: items of
+ * provider turns accepted on this native thread that ended by completion or
+ * interruption, and the user messages that opened them. An interrupted turn
+ * keeps what it did (Hermes records tool calls up to the stop), so a run that
+ * later failed at a restart still has these items natively. Failed turns are
+ * not counted: their native record may be incomplete.
+ */
+export function nativelyHeldItemPredicate(input: {
+  readonly attempts: ReadonlyArray<OrchestrationV2RunAttempt>;
+  readonly providerTurns: ReadonlyArray<OrchestrationV2ProviderTurn>;
+  readonly nativeThreadId: string | undefined;
+}): (item: OrchestrationV2TurnItem) => boolean {
+  const { nativeThreadId } = input;
+  if (nativeThreadId === undefined) return () => false;
+  const attempts = new Map(
+    input.attempts
+      .filter((attempt) => attempt.nativeThreadId === nativeThreadId)
+      .map((attempt) => [attempt.id, attempt] as const),
+  );
+  const turnIds = new Set<string>();
+  const rootNodeIds = new Set<string>();
+  for (const turn of input.providerTurns) {
+    if (turn.status !== "completed" && turn.status !== "interrupted") continue;
+    const attempt = turn.runAttemptId === null ? undefined : attempts.get(turn.runAttemptId);
+    if (attempt === undefined) continue;
+    turnIds.add(turn.id);
+    rootNodeIds.add(attempt.rootNodeId);
+  }
+  return (item) =>
+    (item.providerTurnId !== null && turnIds.has(item.providerTurnId)) ||
+    (item.type === "user_message" && item.nodeId !== null && rootNodeIds.has(item.nodeId));
 }
 
 export function historicalMessage(

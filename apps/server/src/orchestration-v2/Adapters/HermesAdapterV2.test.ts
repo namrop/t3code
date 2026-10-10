@@ -87,6 +87,11 @@ describe("Hermes ACP compatibility", () => {
         ?.HERMES_HOME,
     ).toBe("/right");
   });
+  it("routes /compact to Hermes's own /compress command", () => {
+    const flavor = makeHermesAcpAdapterFlavor({} as never);
+    expect(flavor.supportsCompaction).toBe(true);
+    expect(flavor.compactionCommand).toBe("/compress");
+  });
   it("maps all T3 runtime modes to Hermes approval modes", () => {
     expect(
       ["approval-required", "auto", "auto-accept-edits", "full-access"].map((mode) =>

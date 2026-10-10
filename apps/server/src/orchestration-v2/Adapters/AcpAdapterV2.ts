@@ -327,6 +327,12 @@ export interface AcpAdapterV2Flavor {
   /** Batch launches without child completion signals become idle when the root turn ends. */
   readonly subagentsIdleOnTurnCompletion?: boolean;
   readonly supportsCompaction?: boolean;
+  /**
+   * The prompt that asks the agent to compact its own context. Defaults to
+   * `/compact`; agents that name the command differently (Hermes: `/compress`)
+   * set it here so T3's `/compact` reaches the agent's real command.
+   */
+  readonly compactionCommand?: string;
   readonly runtimeHarness?: string;
   readonly registerExtensions?: (
     context: AcpAdapterV2ExtensionContext,
@@ -6673,7 +6679,7 @@ export function makeAcpAdapterV2(
           const now = yield* DateTime.now;
           if (
             flavor.supportsCompaction === true &&
-            context.input.message.text.trim() === "/compact" &&
+            context.input.message.text.trim() === (flavor.compactionCommand ?? "/compact") &&
             context.input.message.attachments.length === 0 &&
             settledStatus === "completed"
           ) {
@@ -7588,7 +7594,10 @@ export function makeAcpAdapterV2(
                 compactThread: (turnInput: ProviderAdapter.ProviderAdapterV2TurnInput) =>
                   startTurn({
                     ...turnInput,
-                    message: { ...turnInput.message, text: "/compact" },
+                    message: {
+                      ...turnInput.message,
+                      text: flavor.compactionCommand ?? "/compact",
+                    },
                   }),
               }
             : {}),

@@ -43,8 +43,10 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
     // thread-level entry point when detailed coverage would crowd out history;
     // its activity includes the original handoff/fork source references.
     if (historyCost([], coverage) > Math.min(4_000, budget / 2)) {
-      const strategies = Array.from(new Set(pending.map((handoff) => handoff.strategy)));
-      coverage = `Context handoff (${strategies.join(", ")}). ${pending.length} handoff records; detailed coverage references omitted. Recover history with t3_thread_read({threadId:"${input.providerThread.appThreadId ?? pending[0]!.threadId}",view:"activity",limit:20,maxCharsPerItem:4000}); paginate with afterPosition=nextPosition. Follow fork/handoff source references in activity. For long items use itemId and textOffset=nextTextOffset until null.`;
+      coverage = pointerOnlyCoverage(
+        input.providerThread.appThreadId ?? pending[0]!.threadId,
+        pending,
+      );
     }
     const seen = new Set(input.alreadyDeliveredItemIds);
     const messages = pending
@@ -64,15 +66,36 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
       oldContext && historyCost([], `${coverage}\n${oldContext}`) + 512 <= budget
         ? `${coverage}\n${oldContext}`
         : coverage;
-    const selected = selectHistory({
+    const omittedItems = pending.reduce(
+      (sum, handoff) => sum + (handoff.history?.omittedItems ?? 0),
+      0,
+    );
+    let selected = selectHistory({
       messages,
       coverage: fullCoverage,
-      omittedItems: pending.reduce((sum, handoff) => sum + (handoff.history?.omittedItems ?? 0), 0),
+      omittedItems,
       budget,
     });
     if (historyCost(selected.messages, selected.context) > budget) {
       if (input.deferInline) return { context: "", delivered: Effect.void };
-      return yield* new ContextHandoffBudgetError();
+      // Even the coverage marker does not fit: the native transcript is near
+      // its window. Refusing strands the thread (every retry hits the same
+      // wall), so send only the retrieval pointer. It is a few hundred bytes,
+      // well inside the reserve `handoffBudget` keeps for work, and the history
+      // stays readable through t3_thread_read.
+      selected = selectHistory({
+        messages: [],
+        coverage: pointerOnlyCoverage(
+          input.providerThread.appThreadId ?? pending[0]!.threadId,
+          pending,
+        ),
+        omittedItems: omittedItems + messages.length,
+        budget: 0,
+      });
+      selected = {
+        ...selected,
+        omittedItemIds: messages.map((message) => message.itemId),
+      };
     }
     const omittedItemIds = new Set(selected.omittedItemIds);
     const persist = (status: "pending" | "injected" | "inline") =>
@@ -141,6 +164,16 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
   },
 );
 
+/** A single thread-level retrieval pointer: the smallest useful handoff. */
+function pointerOnlyCoverage(
+  threadId: string,
+  pending: ReadonlyArray<OrchestrationV2ContextHandoff>,
+): string {
+  const strategies = Array.from(new Set(pending.map((handoff) => handoff.strategy)));
+  return `Context handoff (${strategies.join(", ")}). ${pending.length} handoff records; detailed coverage references omitted. Recover history with t3_thread_read({threadId:"${threadId}",view:"activity",limit:20,maxCharsPerItem:4000}); paginate with afterPosition=nextPosition. Follow fork/handoff source references in activity. For long items use itemId and textOffset=nextTextOffset until null.`;
+}
+
+/** Retained for persisted failures and their translation; delivery no longer raises it. */
 export class ContextHandoffBudgetError extends Schema.TaggedError<ContextHandoffBudgetError>()(
   "ContextHandoffBudgetError",
   {},

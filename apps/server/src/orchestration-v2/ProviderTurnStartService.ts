@@ -29,6 +29,7 @@ import {
   DEFAULT_HANDOFF_TOKEN_CAP,
   handoffTokenCapConfig,
   handoffBudget,
+  nativelyHeldItemPredicate,
   attachmentTokenAllowance,
   contextUsageForHandoff,
   historicalMessage,
@@ -1006,6 +1007,17 @@ export const layer: Layer.Layer<
           )
           .map((source) => source.runId),
       );
+      // A run that failed at its last start can still have earlier attempts the
+      // provider accepted and ended by completion or interruption (a steer
+      // restart, or an interrupt that Hermes records up to the stop). Those
+      // turns are already in this native transcript; resending them spends the
+      // handoff allowance on duplicates and can strand a full session. Failed
+      // turns stay eligible: their native record may be incomplete.
+      const isNativelyHeld = nativelyHeldItemPredicate({
+        attempts: acceptedAttempts,
+        providerTurns: projection.providerTurns,
+        nativeThreadId: runningProviderThread.nativeThreadRef?.nativeId ?? undefined,
+      });
       const legacyInputRunIds = new Set(
         acceptedAttempts
           .filter((source) => source.nativeThreadId === undefined)
@@ -1036,7 +1048,8 @@ export const layer: Layer.Layer<
                 item.runId === run.id ||
                 (item.runId !== null &&
                   missedRunIds.has(item.runId) &&
-                  !deliveredItemIds.has(item.id)) ||
+                  !deliveredItemIds.has(item.id) &&
+                  !isNativelyHeld(item)) ||
                 (item.providerThreadId !== providerThread.id && !deliveredItemIds.has(item.id))
               )
                 return sum;
@@ -1083,6 +1096,7 @@ export const layer: Layer.Layer<
                 item.runId !== null &&
                 missedRunIds.has(item.runId) &&
                 !coveredItemIds.has(item.id) &&
+                !isNativelyHeld(item) &&
                 historicalMessage(item) !== null,
             );
       const startWithHandoffs = (

@@ -12,6 +12,9 @@ import {
   OrchestrationV2ContextHandoff,
   type OrchestrationV2HistoricalMessage,
   type OrchestrationV2ProviderThread,
+  type OrchestrationV2ProviderTurn,
+  type OrchestrationV2RunAttempt,
+  type OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -23,6 +26,7 @@ import {
   historyResponseItems,
   selectHistory,
   historicalMessage,
+  nativelyHeldItemPredicate,
 } from "./ContextHandoffBudget.ts";
 import { projectContextHandoffForWire } from "./WireProjection.ts";
 import { deliverContextHandoffs } from "./ContextHandoffDelivery.ts";
@@ -91,6 +95,59 @@ const handoff: OrchestrationV2ContextHandoff = {
   createdAt: now,
   updatedAt: now,
 };
+
+describe("natively held history", () => {
+  // Shaped on a real Hermes thread: one run accepted twice (the second after a
+  // steer), interrupted, then failed at its third start. Its accepted work is
+  // already in the native session and must not be resent as missed history.
+  const attempt = (id: string, nativeThreadId: string | undefined) =>
+    ({
+      id,
+      rootNodeId: `${id}:root`,
+      ...(nativeThreadId === undefined ? {} : { nativeThreadId }),
+    }) as unknown as OrchestrationV2RunAttempt;
+  const turn = (id: string, runAttemptId: string, status: string) =>
+    ({ id, runAttemptId, status }) as unknown as OrchestrationV2ProviderTurn;
+  const item = (type: string, nodeId: string, providerTurnId: string | null) =>
+    ({ type, nodeId, providerTurnId }) as unknown as OrchestrationV2TurnItem;
+  const isHeld = nativelyHeldItemPredicate({
+    attempts: [
+      attempt("a1", "native:target"),
+      attempt("a2", "native:target"),
+      attempt("a-failed", "native:target"),
+      attempt("a-other", "native:other"),
+    ],
+    providerTurns: [
+      turn("t1", "a1", "completed"),
+      turn("t2", "a2", "interrupted"),
+      turn("t-failed", "a-failed", "failed"),
+      turn("t-other", "a-other", "completed"),
+    ],
+    nativeThreadId: "native:target",
+  });
+
+  it("keeps completed and interrupted turns and their prompts out of resends", () => {
+    assert.isTrue(isHeld(item("dynamic_tool", "a2:tool", "t2")));
+    assert.isTrue(isHeld(item("assistant_message", "a1:root", "t1")));
+    assert.isTrue(isHeld(item("user_message", "a2:root", null)));
+  });
+
+  it("still resends the prompt that never started, failed turns and other sessions", () => {
+    assert.isFalse(isHeld(item("user_message", "a3:root", null)));
+    assert.isFalse(isHeld(item("command_execution", "a-failed:root", "t-failed")));
+    assert.isFalse(isHeld(item("user_message", "a-failed:root", null)));
+    assert.isFalse(isHeld(item("assistant_message", "a-other:root", "t-other")));
+  });
+
+  it("holds nothing without a native session", () => {
+    const none = nativelyHeldItemPredicate({
+      attempts: [attempt("a1", "native:target")],
+      providerTurns: [turn("t1", "a1", "completed")],
+      nativeThreadId: undefined,
+    });
+    assert.isFalse(none(item("assistant_message", "a1:root", "t1")));
+  });
+});
 
 describe("handoff budget", () => {
   it("keeps old preview handoffs readable and delivery history off the wire", () => {
@@ -669,23 +726,39 @@ describe("handoff delivery", () => {
     }),
   );
 
-  it.effect("fails before delivery when even the coverage marker cannot fit", () =>
+  it.effect("sends only the retrieval pointer when even the coverage marker cannot fit", () =>
     Effect.gen(function* () {
-      let calls = 0;
+      // A native transcript near its window leaves no handoff allowance.
+      // Refusing would fail every later turn the same way, so the thread
+      // gets the thread_read pointer and all history counts as omitted.
+      const injected: Array<{ messages: ReadonlyArray<unknown>; context: string }> = [];
+      let durable: OrchestrationV2ContextHandoff = handoff;
       const result = yield* deliverContextHandoffs({
         handoffs: [handoff],
         providerThread,
         budget: 0,
         alreadyDeliveredItemIds: new Set(),
-        inject: () =>
+        inject: (value) =>
           Effect.sync(() => {
-            calls++;
+            injected.push(value);
             return true;
           }),
-        persist: () => Effect.void,
+        persist: (value) =>
+          Effect.sync(() => {
+            durable = value;
+          }),
       }).pipe(Effect.result);
-      assert.equal(result._tag, "Failure");
-      assert.equal(calls, 0);
+      assert.equal(result._tag, "Success");
+      assert.lengthOf(injected, 1);
+      assert.lengthOf(injected[0]!.messages, 0);
+      assert.include(injected[0]!.context, "t3_thread_read");
+      assert.isBelow(historyCost([], injected[0]!.context), 2_000);
+      assert.equal(durable.delivery?.status, "injected");
+      assert.deepEqual(durable.delivery?.itemIds, []);
+      assert.includeMembers(
+        [...(durable.delivery?.omittedItemIds ?? [])],
+        messages.map((item) => item.itemId),
+      );
     }),
   );
 });
