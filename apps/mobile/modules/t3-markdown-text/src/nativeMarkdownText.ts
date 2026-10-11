@@ -104,6 +104,7 @@ export function nativeMarkdownContextCopyRanges(
       readonly skillName?: string;
       readonly fileIcon?: string;
       readonly sourceText?: string;
+      readonly sourceStart?: boolean;
     };
     readonly text: string;
     readonly inlineImageLength: number;
@@ -128,6 +129,7 @@ export function nativeMarkdownContextCopyRanges(
     const previous = ranges.at(-1);
     if (
       run.sourceText !== undefined &&
+      !run.sourceStart &&
       !runs[index - 1]?.run.fileIcon &&
       previous?.end === start &&
       previous.text === source
@@ -159,6 +161,8 @@ export interface NativeMarkdownTextRun {
   readonly skillName?: string;
   readonly skillLabel?: string;
   readonly sourceText?: string;
+  /** Starts a distinct authored link, even when the preceding link has identical text. */
+  readonly sourceStart?: boolean;
   readonly role?:
     | "body"
     | "heading"
@@ -530,6 +534,21 @@ function appendNode(
         return runs;
       }
       const presentation = resolveMarkdownLinkPresentation(node.href ?? "");
+      if (presentation.kind === "atrium") {
+        const atriumRuns: NativeMarkdownTextRun[] = [];
+        const atriumContext = {
+          ...context,
+          href: presentation.href,
+          sourceText: `[${fileLinkLabelMarkdown(node)}](<${presentation.href}>)`,
+        };
+        appendChildren(atriumRuns, node, atriumContext);
+        if (presentation.link.kind === "unsupported") {
+          appendRun(atriumRuns, " (unsupported Atrium link)", atriumContext);
+        }
+        if (atriumRuns[0]) atriumRuns[0] = { ...atriumRuns[0], sourceStart: true };
+        runs.push(...atriumRuns);
+        return runs;
+      }
       if (presentation.kind === "file") {
         const label = textNodeContent(nodeTextContent(node));
         if (!isMarkdownFileLinkLabel(label, presentation.href)) {

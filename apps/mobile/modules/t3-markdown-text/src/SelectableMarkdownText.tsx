@@ -1,3 +1,4 @@
+import { normalizeAtriumMarkdown } from "@t3tools/client-runtime/atrium-links";
 import { useMemo } from "react";
 import { View } from "react-native";
 import { parseMarkdownWithOptions } from "react-native-nitro-markdown/headless";
@@ -52,9 +53,10 @@ export function SelectableMarkdownText({
   marginBottom = 0,
 }: SelectableMarkdownTextProps) {
   const chunks = useMemo(() => {
+    const source = normalizeAtriumMarkdown(markdown);
     const parsedDocument = nativeMarkdownWithAuthoredWindowsPaths(
-      parseMarkdownWithOptions(markdown, { gfm: true, html: true, math: false }),
-      markdown,
+      parseMarkdownWithOptions(source, { gfm: true, html: true, math: false }),
+      source,
     );
     const document = preserveSoftBreaks
       ? nativeMarkdownWithPreservedSoftBreaks(parsedDocument)

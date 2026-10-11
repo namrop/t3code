@@ -1,9 +1,10 @@
-import { Linking } from "react-native";
+import { Alert, Linking } from "react-native";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { tryOpenExternalUrl } from "./openExternalUrl";
 
 vi.mock("react-native", () => ({
+  Alert: { alert: vi.fn() },
   Linking: { openURL: vi.fn() },
 }));
 
@@ -18,6 +19,45 @@ afterEach(() => {
 });
 
 describe("tryOpenExternalUrl", () => {
+  it("opens an Atrium object in the estate reader without launching its OS scheme", async () => {
+    openURL.mockResolvedValue(undefined);
+    const reference =
+      "atrium://uid/01900000-0000-7000-8000-000000000001?rel=source&why=Read+first&fallback=url%3Ahttps%3A%2F%2Fexample.com";
+    await expect(tryOpenExternalUrl(reference, "markdown-link")).resolves.toBe(true);
+    expect(openURL).toHaveBeenCalledExactlyOnceWith(
+      "https://atrium.sol.pharos.zone/?note=01900000-0000-7000-8000-000000000001&rel=source&why=Read+first&fallback=url%3Ahttps%3A%2F%2Fexample.com",
+    );
+    expect(Alert.alert).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "atrium://beam/example",
+    "atrium://uid/not-a-uid",
+    "uid:01900000-0000-7000-8000-000000000001?revision=1",
+  ])(
+    "explains unsupported Atrium references without asking the OS to open %s",
+    async (reference) => {
+      await expect(tryOpenExternalUrl(reference, "markdown-link")).resolves.toBe(false);
+      expect(openURL).not.toHaveBeenCalled();
+      expect(Alert.alert).toHaveBeenCalledWith(
+        "Unsupported Atrium link",
+        expect.stringContaining("Unsupported Atrium link:"),
+      );
+    },
+  );
+
+  it("shows a reader-opening failure instead of silently dropping the Atrium tap", async () => {
+    openURL.mockRejectedValue(new Error("browser unavailable"));
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await expect(
+      tryOpenExternalUrl("uid:01900000-0000-7000-8000-000000000001", "markdown-link"),
+    ).resolves.toBe(false);
+    expect(Alert.alert).toHaveBeenCalledWith(
+      "Unable to open Atrium note",
+      expect.stringContaining("reader"),
+    );
+  });
+
   it("opens supported URLs", async () => {
     openURL.mockResolvedValue(undefined);
 

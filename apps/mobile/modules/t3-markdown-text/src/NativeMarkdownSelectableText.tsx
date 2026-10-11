@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useMemo } from "react";
 import { decodeComposerContextFragment } from "@t3tools/shared/composerContextClipboard";
 import {
+  Alert,
   findNodeHandle,
   Image,
   Linking,
@@ -15,7 +16,11 @@ import {
 import { MarkdownTextPrimitive } from "./MarkdownTextPrimitive";
 import { markdownFileIconSource, markdownIconAssetUri } from "./markdownFileIcons";
 import { markdownLinkIconSource } from "./markdownLinkIcons";
-import { resolveMarkdownFileIcon, resolveMarkdownLinkIcon } from "./markdownLinks";
+import {
+  resolveMarkdownFileIcon,
+  resolveMarkdownLinkIcon,
+  resolveMarkdownLinkPresentation,
+} from "./markdownLinks";
 import type { NativeMarkdownTextRun } from "./nativeMarkdownText";
 import { nativeMarkdownContextCopyRanges } from "./nativeMarkdownText";
 import type {
@@ -77,6 +82,7 @@ function runKeySignature(run: NativeMarkdownTextRun): string {
     run.skillName,
     run.skillLabel,
     run.sourceText,
+    run.sourceStart,
     run.role,
     run.headingLevel,
     run.depth,
@@ -298,7 +304,12 @@ export function NativeMarkdownSelectableText(props: {
     : "";
   const attachAndroidText = useCallback(
     (textView: TextInstance | null) => {
-      if (Platform.OS !== "android" || !containsInlineIcon || !textView) return;
+      if (
+        Platform.OS !== "android" ||
+        (!containsInlineIcon && !contextClipboardConfig) ||
+        !textView
+      )
+        return;
       const reactTag = findNodeHandle(textView);
       if (typeof reactTag === "number") {
         installMarkdownCopySanitizer(reactTag, contextClipboardConfig);
@@ -357,7 +368,23 @@ export function NativeMarkdownSelectableText(props: {
         const onPress = href
           ? () => {
               if (props.onLinkPress) props.onLinkPress(href);
-              else void Linking.openURL(href);
+              else {
+                const presentation = resolveMarkdownLinkPresentation(href);
+                if (presentation.kind === "atrium") {
+                  if (presentation.link.kind === "unsupported") {
+                    Alert.alert("Unsupported Atrium link", presentation.link.message);
+                  } else {
+                    void Linking.openURL(presentation.link.readerUrl).catch(() => {
+                      Alert.alert(
+                        "Unable to open Atrium note",
+                        "The Atrium reader could not be opened. Try the link again.",
+                      );
+                    });
+                  }
+                } else {
+                  void Linking.openURL(href);
+                }
+              }
             }
           : undefined;
         const fileIconUri = run.fileIcon

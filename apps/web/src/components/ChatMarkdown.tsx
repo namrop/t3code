@@ -81,6 +81,7 @@ import ReactMarkdown from "react-markdown";
 import { toHtml } from "hast-util-to-html";
 import { createIncrementalMarkdownPlugin } from "../markdown-incremental";
 import { defaultUrlTransform } from "react-markdown";
+import { remarkAtriumLinks, parseAtriumLink } from "@t3tools/client-runtime/atrium-links";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkBreaks from "remark-breaks";
@@ -487,13 +488,21 @@ const CHAT_MARKDOWN_SANITIZE_SCHEMA = {
   },
   protocols: {
     ...defaultSchema.protocols,
-    href: [...(defaultSchema.protocols?.href ?? []), "file", "t3-citation", "t3-context"],
+    href: [
+      ...(defaultSchema.protocols?.href ?? []),
+      "file",
+      "t3-citation",
+      "t3-context",
+      "atrium",
+      "uid",
+    ],
     src: [...(defaultSchema.protocols?.src ?? []), "file", "t3-context"],
   },
 } satisfies Parameters<typeof rehypeSanitize>[0];
 
 const CHAT_MARKDOWN_REMARK_PLUGINS = [
   remarkGfm,
+  remarkAtriumLinks,
   remarkKeepWindowsPathDestinations,
   remarkGithubAlerts,
   remarkNormalizeListItemIndentation,
@@ -504,6 +513,7 @@ const CHAT_MARKDOWN_REMARK_PLUGINS = [
 
 const CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS = [
   remarkGfm,
+  remarkAtriumLinks,
   remarkKeepWindowsPathDestinations,
   remarkGithubAlerts,
   remarkNormalizeListItemIndentation,
@@ -2576,9 +2586,10 @@ function useChatMarkdownState({
     ];
     return buildFileLinkParentSuffixByPath(filePaths);
   }, [inlineCodeFileLinkMetaByText, markdownFileLinkMetaByHref]);
-  const markdownUrlTransform = useCallback((href: string) => {
+  const markdownUrlTransform = useCallback((href: string, key: string) => {
     if (parseAssistantCitationHref(href)) return href;
     if (parseComposerContextHref(href)) return href;
+    if (key === "href" && parseAtriumLink(href)) return href;
     if (isWindowsDrivePathHref(href)) return href;
     return rewriteMarkdownFileUriHref(href) ?? defaultUrlTransform(href);
   }, []);
@@ -3036,6 +3047,27 @@ const CHAT_MARKDOWN_COMPONENTS = {
         <span>{label}</span>
       );
     }
+    const atriumLink = href ? parseAtriumLink(href) : null;
+    const sourceStart = node?.position?.start.offset;
+    const sourceEnd = node?.position?.end.offset;
+    const authoredLink =
+      sourceStart !== undefined && sourceEnd !== undefined
+        ? text.slice(sourceStart, sourceEnd)
+        : "";
+    const canonicalCopy = atriumLink
+      ? authoredLink.startsWith("[") && authoredLink.includes("](")
+        ? authoredLink
+        : `[${hastPlainTextDeep(node).replace(/[\\[\]]/g, "\\$&")}](${atriumLink.reference})`
+      : undefined;
+    if (atriumLink?.kind === "unsupported") {
+      return (
+        <span data-atrium-reference={atriumLink.reference} data-markdown-copy={canonicalCopy}>
+          {children} ({atriumLink.message})
+        </span>
+      );
+    }
+
+    if (atriumLink?.kind === "object") href = atriumLink.readerUrl;
     const normalizedHref = href ? normalizeMarkdownLinkHrefKey(href) : "";
     const fileLinkMeta = normalizedHref
       ? (markdownFileLinkMetaByHref.get(normalizedHref) ??
@@ -3072,7 +3104,9 @@ const CHAT_MARKDOWN_COMPONENTS = {
         <a
           {...props}
           className={cn(props.className, pullRequestAutolink === "commit" && "font-mono")}
-          data-markdown-copy={pullRequestCopy}
+          data-markdown-copy={canonicalCopy ?? pullRequestCopy}
+          data-atrium-reference={atriumLink?.reference}
+
           href={href}
           target={isSameDocumentLink ? undefined : "_blank"}
           rel={isSameDocumentLink ? undefined : "noopener noreferrer"}
@@ -3168,7 +3202,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
                 }
               },
               openExternal: (target) => api.shell.openExternal(target),
-              copyLink: (target) => writeTextToClipboard(target, "link"),
+              copyLink: (target) => writeTextToClipboard(atriumLink?.reference ?? target, "link"),
               updateThreadLink: updateThreadPullRequestLink,
               reportFailure: (operation, cause) => {
                 reportMarkdownActionFailure({ operation, target: href }, cause);
@@ -3200,6 +3234,19 @@ const CHAT_MARKDOWN_COMPONENTS = {
           )}
         </a>
       );
+      if (atriumLink?.kind === "object") {
+        return (
+          <Tooltip>
+            <TooltipTrigger render={link} />
+            <TooltipPopup>
+              <div>{atriumLink.canonicalReference}</div>
+              {atriumLink.rel && <div>{atriumLink.rel}</div>}
+              {atriumLink.why && <div>{atriumLink.why}</div>}
+              {atriumLink.fallback && <div>{atriumLink.fallback}</div>}
+            </TooltipPopup>
+          </Tooltip>
+        );
+      }
       if (!faviconHost || !href) {
         return link;
       }

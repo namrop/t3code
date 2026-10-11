@@ -1,3 +1,4 @@
+import { parseAtriumLink, type AtriumLink } from "@t3tools/client-runtime/atrium-links";
 import {
   fileBasename,
   formatFilePathPosition,
@@ -12,6 +13,11 @@ import type { MARKDOWN_FILE_ICON_SOURCES } from "./markdownFileIcons.generated";
 const POSITION_SUFFIX_PATTERN = /:\d+(?::\d+)?$/;
 
 export type MarkdownLinkPresentation =
+  | {
+      readonly kind: "atrium";
+      readonly href: string;
+      readonly link: AtriumLink;
+    }
   | {
       readonly kind: "external";
       readonly href: string;
@@ -265,6 +271,8 @@ export function resolveMarkdownFileIcon(value: string): MarkdownFileIcon {
 
 export function resolveMarkdownLinkPresentation(href: string): MarkdownLinkPresentation {
   const normalized = normalizeMarkdownLinkDestination(href);
+  const atrium = parseAtriumLink(normalized);
+  if (atrium) return { kind: "atrium", href: normalized, link: atrium };
   try {
     const parsed = new URL(normalizeNativeMarkdownUrl(normalized));
     if (parsed.protocol === "http:" || parsed.protocol === "https:") {

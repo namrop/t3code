@@ -9,6 +9,7 @@ import * as Haptics from "expo-haptics";
 import { KeyboardAwareLegendList } from "@legendapp/list/keyboard";
 import { useViewabilityAmount, type LegendListRef } from "@legendapp/list/react-native";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { normalizeAtriumMarkdown } from "@t3tools/client-runtime/atrium-links";
 import { resolveUserMessagePresentation } from "@t3tools/client-runtime/user-message";
 import { canForkProjectedAssistantItem } from "@t3tools/client-runtime/state/thread-workflows";
 import {
@@ -941,7 +942,7 @@ const AssistantMarkdownContent = memo(function AssistantMarkdownContent(props: {
         styles={props.markdownStyles.styles}
         theme={props.markdownStyles.theme}
       >
-        {markdown}
+        {normalizeAtriumMarkdown(markdown)}
       </Markdown>
     );
   });
@@ -1242,16 +1243,13 @@ function useMarkdownStyles(
           <MarkdownLinkLabelContext.Provider value="other">
             <NativeText
               className="underline"
-              onPress={
-                linkHref
-                  ? () => {
-                      void tryOpenExternalUrl(linkHref, "markdown-link");
-                    }
-                  : undefined
-              }
+              onPress={linkHref ? () => onLinkPress(linkHref) : undefined}
               style={{ color: markdownLinkColor }}
             >
               {children}
+              {presentation.kind === "atrium" && presentation.link.kind === "unsupported"
+                ? " (unsupported Atrium link)"
+                : null}
             </NativeText>
           </MarkdownLinkLabelContext.Provider>
         );
@@ -2042,7 +2040,7 @@ function LegacyUserMessageContent(props: UserMessageContentProps) {
         styles={props.markdownStyles.styles}
         theme={props.markdownStyles.theme}
       >
-        {text}
+        {normalizeAtriumMarkdown(text)}
       </Markdown>
     );
   }
@@ -2084,7 +2082,7 @@ function LegacyUserMessageContent(props: UserMessageContentProps) {
             styles={props.markdownStyles.styles}
             theme={props.markdownStyles.theme}
           >
-            {text}
+            {normalizeAtriumMarkdown(text)}
           </Markdown>
         );
       })}
@@ -2243,6 +2241,10 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   const onMarkdownLinkPress = useCallback(
     (href: string) => {
       const presentation = resolveMarkdownLinkPresentation(href);
+      if (presentation.kind === "atrium") {
+        void tryOpenExternalUrl(presentation.href, "markdown-link");
+        return;
+      }
       if (presentation.kind === "file") {
         const relativePath = resolveWorkspaceRelativeFilePath(
           props.workspaceRoot,

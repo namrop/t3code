@@ -14,6 +14,71 @@ import {
 } from "@t3tools/mobile-markdown-text/markdown";
 
 describe("nativeMarkdownTextRuns", () => {
+  it("copies Atrium identity and query context instead of the reader URL or bare label", () => {
+    const href =
+      "atrium://uid/01900000-0000-7000-8000-000000000001?rel=source&why=Read+first&fallback=url%3Ahttps%3A%2F%2Fexample.com";
+    const runs = nativeMarkdownTextRuns({
+      type: "paragraph",
+      children: [
+        {
+          type: "link",
+          href,
+          children: [
+            { type: "text", content: "Read " },
+            { type: "bold", children: [{ type: "text", content: "Note" }] },
+          ],
+        },
+      ],
+    });
+    expect(runs.map((run) => run.href)).toEqual([href, href]);
+    expect(
+      nativeMarkdownContextCopyRanges(
+        runs.map((run) => ({ run, text: run.text, inlineImageLength: 0 })),
+      ),
+    ).toEqual([{ start: 0, end: 9, text: `[Read **Note**](<${href}>)` }]);
+  });
+
+  it("does not collapse repeated adjacent Atrium references when copying", () => {
+    const href = "uid:01900000-0000-7000-8000-000000000001";
+    const link: MarkdownNode = {
+      type: "link",
+      href,
+      children: [{ type: "text", content: "Note" }],
+    };
+    const runs = nativeMarkdownTextRuns({ type: "paragraph", children: [link, link] });
+    expect(
+      nativeMarkdownContextCopyRanges(
+        runs.map((run) => ({ run, text: run.text, inlineImageLength: 0 })),
+      ),
+    ).toEqual([
+      { start: 0, end: 4, text: `[Note](<${href}>)` },
+      { start: 4, end: 8, text: `[Note](<${href}>)` },
+    ]);
+  });
+
+  it("visibly marks unsupported Atrium links but copies only the authored reference", () => {
+    const href = "atrium://beam/example";
+    const runs = nativeMarkdownTextRuns({
+      type: "paragraph",
+      children: [{ type: "link", href, children: [{ type: "text", content: "Agents" }] }],
+    });
+    const displayText = runs.map((run) => run.text).join("");
+    expect(displayText).toBe("Agents (unsupported Atrium link)");
+    expect(runs.every((run) => run.href === href)).toBe(true);
+    expect(
+      nativeMarkdownContextCopyRanges(
+        runs.map((run) => ({ run, text: run.text, inlineImageLength: 0 })),
+      ),
+    ).toEqual([{ start: 0, end: displayText.length, text: `[Agents](<${href}>)` }]);
+  });
+
+  it("does not turn Atrium examples in inline code into active links", () => {
+    const content = "atrium://uid/01900000-0000-7000-8000-000000000001";
+    expect(
+      nativeMarkdownTextRuns({ type: "paragraph", children: [{ type: "code_inline", content }] }),
+    ).toEqual([{ text: content, code: true }]);
+  });
+
   it("distinguishes video and pull-request context from generic file and review chips", () => {
     expect(
       contextChipPresentation("file", {

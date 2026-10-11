@@ -73,6 +73,123 @@ function codeButton(renderer: ReactTestRenderer, label: string) {
   return button.props as ComponentProps<typeof Button>;
 }
 
+describe("ChatMarkdown Atrium navigation", () => {
+  it("keeps formatted labels and unsupported references intact for selection-copy", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    let renderer: ReactTestRenderer | undefined;
+    const ref = "atrium://uid/01900000-0000-7000-8000-000000000001";
+    const supported = `[**Object**](${ref}){why="Read *context*"}`;
+    const unsupported = "[**Group**](atrium://beam/example)";
+    try {
+      await act(async () => {
+        renderer = create(<ChatMarkdown text={`${supported}\n\n${unsupported}`} cwd={undefined} />);
+      });
+      expect(renderer!.root.findByType("a").props["data-markdown-copy"]).toBe(supported);
+      expect(
+        renderer!.root.findByProps({ "data-atrium-reference": "atrium://beam/example" }).props[
+          "data-markdown-copy"
+        ],
+      ).toBe(unsupported);
+    } finally {
+      await act(async () => renderer?.unmount());
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("preserves checkbox edits and closed shell fences after contextual links", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    let renderer: ReactTestRenderer | undefined;
+    const prefix = '[Object](atrium://uid/01900000-0000-7000-8000-000000000001){why="Read"}\n\n';
+    const text = `${prefix}- [ ] Task\n\n\`\`\`bash\nprintf hello\n\`\`\``;
+    const markerOffset = text.indexOf("[ ]");
+    const changed = vi.fn();
+    const run = vi.fn();
+    try {
+      await act(async () => {
+        renderer = create(
+          <ChatMarkdown
+            text={text}
+            onTaskListChange={changed}
+            onRunShellCommand={run}
+            cwd="/tmp/project"
+          />,
+        );
+      });
+      const item = renderer!.root.findByType("li");
+      const input = renderer!.root.findByType("input");
+      expect(item.props["data-task-marker-offset"]).toBe(markerOffset);
+      await act(async () => {
+        input.props.onChange({
+          currentTarget: {
+            checked: true,
+            closest: () => ({
+              dataset: { taskMarkerOffset: String(item.props["data-task-marker-offset"]) },
+            }),
+          },
+        });
+        codeButton(renderer!, "Run in terminal").onClick?.({} as never);
+      });
+      expect(changed).toHaveBeenCalledExactlyOnceWith({
+        markerOffset,
+        checked: true,
+      });
+      expect(run).toHaveBeenCalledExactlyOnceWith("printf hello");
+      expect(setMarkdownTaskChecked(text, changed.mock.calls[0]![0].markerOffset, true)).toBe(
+        text.replace("[ ] Task", "[x] Task"),
+      );
+    } finally {
+      await act(async () => renderer?.unmount());
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([false, true])(
+    "opens UID links in the reader with parseRawHtml=%s",
+    async (parseRawHtml) => {
+      vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+      let renderer: ReactTestRenderer | undefined;
+      const uid = "01900000-0000-7000-8000-000000000001";
+      const reference = `atrium://uid/${uid}?rel=review&why=Read%20the%20object`;
+      try {
+        await act(async () => {
+          renderer = create(
+            <ChatMarkdown
+              cwd={undefined}
+              parseRawHtml={parseRawHtml}
+              text={`[Object](${reference})`}
+            />,
+          );
+        });
+        const link = renderer!.root.findByType("a");
+        expect(new URL(link.props.href).searchParams.get("note")).toBe(uid);
+        expect(link.props["data-markdown-copy"]).toBe(`[Object](${reference})`);
+        const event = {
+          defaultPrevented: false,
+          ctrlKey: true,
+          preventDefault: vi.fn(),
+          stopPropagation: vi.fn(),
+        };
+        link.props.onClick(event);
+        expect(event.preventDefault).not.toHaveBeenCalled();
+        await act(async () => {
+          renderer!.update(
+            <ChatMarkdown
+              cwd={undefined}
+              parseRawHtml={parseRawHtml}
+              text={`[Object](atrium://beam/example)`}
+            />,
+          );
+        });
+        expect(renderer!.root.findAllByType("a")).toHaveLength(0);
+        expect(JSON.stringify(renderer!.toJSON())).toContain("Unsupported Atrium link");
+      } finally {
+        await act(async () => renderer?.unmount());
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+});
+
 describe("ChatMarkdown context references", () => {
   it("renders text and image references through the chip renderer, with readable fallback", async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);

@@ -1,3 +1,4 @@
+import { normalizeAtriumMarkdown } from "@t3tools/client-runtime/atrium-links";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -17,6 +18,57 @@ describe("resolveMarkdownLinkIcon", () => {
 });
 
 describe("resolveMarkdownLinkPresentation", () => {
+  it("keeps Atrium identity separate from its HTTPS reader destination", () => {
+    const uid = "01900000-0000-7000-8000-000000000001";
+    const href = `atrium://uid/${uid}?rel=source&why=Grounding&fallback=url%3Ahttps%3A%2F%2Fexample.com`;
+    expect(resolveMarkdownLinkPresentation(href)).toMatchObject({
+      kind: "atrium",
+      href,
+      link: {
+        kind: "object",
+        reference: href,
+        uid,
+        rel: "source",
+        why: "Grounding",
+        fallback: "url:https://example.com",
+        readerUrl: `https://atrium.sol.pharos.zone/?note=${uid}&rel=source&why=Grounding&fallback=url%3Ahttps%3A%2F%2Fexample.com`,
+      },
+    });
+  });
+
+  it("presents normalized canonical body attributes with all context intact", () => {
+    const markdown = normalizeAtriumMarkdown(
+      '[Note](atrium://uid/01900000-0000-7000-8000-000000000001){rel="source" why="Read this first" fallback="url:https://example.com"}',
+    );
+    const href = markdown.slice(markdown.indexOf("(") + 1, -1);
+    expect(resolveMarkdownLinkPresentation(href)).toMatchObject({
+      kind: "atrium",
+      href,
+      link: {
+        kind: "object",
+        rel: "source",
+        why: "Read this first",
+        fallback: "url:https://example.com",
+      },
+    });
+  });
+
+  it.each([
+    "atrium://beam/example",
+    "atrium://uid/not-a-uid",
+    "atrium://uid/01900000-0000-7000-8000-000000000001?revision=1",
+  ])("keeps unsupported Atrium links actionable for an explanation: %s", (href) => {
+    expect(resolveMarkdownLinkPresentation(href)).toMatchObject({
+      kind: "atrium",
+      href,
+      link: {
+        kind: "unsupported",
+        reference: href,
+        message: expect.stringContaining("Unsupported Atrium link"),
+      },
+    });
+  });
+
   it("treats protocol-relative media as an external URL, not a filesystem path", () => {
     expect(resolveMarkdownLinkPresentation("//cdn.example.com/clip.mp4?sig=a%2fb#t=2")).toEqual({
       kind: "external",

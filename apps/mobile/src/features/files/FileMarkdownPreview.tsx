@@ -1,4 +1,6 @@
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { normalizeAtriumMarkdown } from "@t3tools/client-runtime/atrium-links";
+import { resolveMarkdownLinkPresentation } from "@t3tools/mobile-markdown-text/links";
 import { resolveMediaSource } from "@t3tools/client-runtime/media-source";
 import { getBrowseDirectoryPath } from "@t3tools/client-runtime/state/projects";
 import { useCallback, useMemo, useState } from "react";
@@ -62,22 +64,28 @@ function useMarkdownPreviewStyles(renderImage?: MarkdownImageRenderer): Markdown
 
   return useMemo(() => {
     const renderers: CustomRenderers = {
-      link: ({ href, children }) => (
-        <NativeText
-          className="font-t3-medium"
-          onPress={() => {
-            if (href) {
-              void tryOpenExternalUrl(href, "markdown-link");
-            }
-          }}
-          style={{
-            color: link,
-            textDecorationLine: "none",
-          }}
-        >
-          {children}
-        </NativeText>
-      ),
+      link: ({ href, children }) => {
+        const presentation = resolveMarkdownLinkPresentation(href ?? "");
+        return (
+          <NativeText
+            className="font-t3-medium"
+            onPress={() => {
+              if (href) {
+                void tryOpenExternalUrl(href, "markdown-link");
+              }
+            }}
+            style={{
+              color: link,
+              textDecorationLine: "none",
+            }}
+          >
+            {children}
+            {presentation.kind === "atrium" && presentation.link.kind === "unsupported"
+              ? " (unsupported Atrium link)"
+              : null}
+          </NativeText>
+        );
+      },
       image: ({ node }) =>
         node.href && renderImage
           ? (renderImage({
@@ -246,6 +254,10 @@ export function FileMarkdownPreview(props: {
     [markdownDirectory, props.environmentId, props.threadId, props.captured],
   );
   const styles = useMarkdownPreviewStyles(renderImage);
+  const normalizedMarkdown = useMemo(
+    () => normalizeAtriumMarkdown(props.markdown),
+    [props.markdown],
+  );
   const onLinkPress = useCallback((href: string) => {
     void tryOpenExternalUrl(href, "markdown-link");
   }, []);
@@ -278,7 +290,7 @@ export function FileMarkdownPreview(props: {
             styles={styles.styles}
             theme={styles.theme}
           >
-            {props.markdown}
+            {normalizedMarkdown}
           </Markdown>
         )}
       </View>
