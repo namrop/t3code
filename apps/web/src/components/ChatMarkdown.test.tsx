@@ -1,7 +1,7 @@
 import { EnvironmentId } from "@t3tools/contracts";
 import { act, type ComponentProps, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { create, type ReactTestRenderer } from "react-test-renderer";
+import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { getSyntaxHighlighterPromise } from "../lib/syntaxHighlighting";
@@ -74,6 +74,40 @@ function codeButton(renderer: ReactTestRenderer, label: string) {
 }
 
 describe("ChatMarkdown Atrium navigation", () => {
+  it.each(["", "*", "`"])(
+    "keeps following links and separators when context contains %s",
+    async (delimiter) => {
+      vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+      let renderer: ReactTestRenderer | undefined;
+      const ref = "atrium://uid/01900000-0000-7000-8000-000000000001";
+      const first = `[A](${ref}){why="${delimiter}Read"}`;
+      try {
+        await act(async () => {
+          renderer = create(
+            <ChatMarkdown
+              cwd={undefined}
+              parseRawHtml={false}
+              text={`${first} before **bold** [External](https://example.com) [B](${ref}){why="Other"}${delimiter}`}
+            />,
+          );
+        });
+        const links = renderer!.root.findAllByType("a");
+        expect(links.map((a) => a.props["data-markdown-copy"] ?? a.props.href)).toEqual([
+          first,
+          "https://example.com",
+          `[B](${ref}){why="Other"}`,
+        ]);
+        const paragraph = renderer!.root.findByType("p");
+        const renderedText = (node: ReactTestInstance | string): string =>
+          typeof node === "string" ? node : node.children.map(renderedText).join("");
+        expect(renderedText(paragraph)).toBe(`A before bold External B${delimiter}`);
+      } finally {
+        await act(async () => renderer?.unmount());
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
   it("keeps formatted labels and unsupported references intact for selection-copy", async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     let renderer: ReactTestRenderer | undefined;

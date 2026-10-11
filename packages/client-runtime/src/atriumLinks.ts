@@ -1,5 +1,7 @@
 import remarkParse from "remark-parse";
-import { unified } from "unified";
+import { unified, type Processor } from "unified";
+import { markdownLineEnding, unicodeWhitespace } from "micromark-util-character";
+import type { Code, Extension, State, Tokenizer } from "micromark-util-types";
 
 const UID_PATTERN = "[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const LOCATOR_PATTERN = new RegExp(
@@ -8,7 +10,71 @@ const LOCATOR_PATTERN = new RegExp(
 );
 const CONTEXT_KEYS = new Set(["rel", "why", "fallback"]);
 const CONTEXT_ATTRIBUTES = /^\{((?:\s*(?:rel|why|fallback)="(?:\\.|[^"\\])*"\s*)+)\}/;
-const markdownParser = unified().use(remarkParse);
+const markdownParser = unified().use(remarkParse).use(remarkAtriumContextSyntax);
+
+/** Keep context strings literal before emphasis/code/link parsing. Only the
+ * suffix of an inline Atrium UID link participates, never general brace syntax. */
+const tokenizeContext: Tokenizer = function (effects, ok, nok) {
+  const last = this.events.at(-1);
+  if (last?.[0] !== "exit" || last[1].type !== "link") return nok;
+  const destination = this.events.findLast(
+    ([action, token]) => action === "exit" && token.type === "resourceDestinationString",
+  );
+  if (!destination || !/^(?:atrium:\/\/uid\/|uid:)/i.test(this.sliceSerialize(destination[1]))) {
+    return nok;
+  }
+  let phase: "key" | "quote" | "value" | "after" = "key";
+  let key = "";
+  let escaped = false;
+  const token = effects.enter("data");
+  const context = this;
+  return start;
+
+  function start(code: Code): ReturnType<State> {
+    if (code !== 123) return nok(code);
+    effects.consume(code);
+    return read;
+  }
+
+  function read(code: Code): ReturnType<State> {
+    if (code === null) return nok(code);
+    const whitespace = code === -2 || markdownLineEnding(code) || unicodeWhitespace(code);
+    if (phase === "value") {
+      if (escaped) escaped = false;
+      else if (code === 92) escaped = true;
+      else if (code === 34) phase = "after";
+    } else if (phase === "quote") {
+      if (code !== 34) return nok(code);
+      phase = "value";
+    } else if (code === 125 && phase === "after") {
+      effects.consume(code);
+      effects.exit("data");
+      const raw = context.sliceSerialize(token);
+      return CONTEXT_ATTRIBUTES.exec(raw)?.[0] === raw ? ok : nok;
+    } else {
+      if (whitespace) {
+        if (phase === "key" && key.length > 0) return nok(code);
+      } else if (code === 61 && phase === "key" && CONTEXT_KEYS.has(key)) {
+        phase = "quote";
+      } else {
+        if (phase === "after") {
+          phase = "key";
+          key = "";
+        }
+        key += String.fromCharCode(code);
+        if (![...CONTEXT_KEYS].some((field) => field.startsWith(key))) return nok(code);
+      }
+    }
+    effects.consume(code);
+    return read;
+  }
+};
+
+function remarkAtriumContextSyntax(this: Processor) {
+  const data = this.data();
+  const extension: Extension = { text: { 123: { tokenize: tokenizeContext } } };
+  (data.micromarkExtensions ??= []).push(extension);
+}
 
 export type AtriumLink =
   | {
@@ -123,14 +189,11 @@ function afterText(point: MarkdownPoint, text: string): MarkdownPoint {
   };
 }
 
-function textValue(node: MarkdownNode): string {
-  return node.value ?? node.children?.map(textValue).join("") ?? "";
-}
-
 /** Adapt the parsed link, not the whole source: downstream task/fence/file
  * consumers still address the authored Markdown. Extend only the link's end to
  * include its context, which also preserves the complete authored copy token. */
-export function remarkAtriumLinks() {
+export function remarkAtriumLinks(this: Processor) {
+  remarkAtriumContextSyntax.call(this);
   return (tree: MarkdownNode, file: { readonly value: unknown }) => {
     const markdown = String(file.value);
     if (!/(?:atrium:\/\/uid\/|uid:)/i.test(markdown) || !markdown.includes("{")) return;
@@ -152,13 +215,10 @@ export function remarkAtriumLinks() {
               children.splice(index + 1, 1);
               continue;
             }
-            const suffix = markdown.slice(context.end, end);
-            // The leading word prevents a text remainder from becoming a block
-            // construct. Parsing decodes the same entities/escapes as the source.
-            tail.value = textValue(markdownParser.parse(`x${suffix}`)).slice(1);
-            tail.type = "text";
-            delete tail.children;
-            delete tail.url;
+            // The syntax extension kept the attribute token literal. Remove
+            // exactly that prefix, leaving decoded prose and separators intact.
+            if (tail.type !== "text" || tail.value === undefined) break;
+            tail.value = tail.value.slice(context.end - start);
             if (tail.position) tail.position.start = { ...node.position.end };
             break;
           }
