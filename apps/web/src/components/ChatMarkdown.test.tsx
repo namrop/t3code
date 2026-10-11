@@ -102,7 +102,7 @@ describe("ChatMarkdown Atrium navigation", () => {
       }),
   );
 
-  it.each(["\n", "\r\n"])("renders multiline context with %j separators", (newline) =>
+  it.each(["\t", "\n", "\r\n", "\n\t"])("renders context with %j separators", (newline) =>
     checkMarkdown(
       `[A](${ref}){rel="review"${newline}why="Read"${newline}fallback="source"} after`,
       (renderer) => {

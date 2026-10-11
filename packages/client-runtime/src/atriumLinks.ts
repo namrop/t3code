@@ -1,6 +1,10 @@
 import remarkParse from "remark-parse";
 import { unified, type Processor } from "unified";
-import { markdownLineEnding, unicodeWhitespace } from "micromark-util-character";
+import {
+  markdownLineEnding,
+  markdownLineEndingOrSpace,
+  unicodeWhitespace,
+} from "micromark-util-character";
 import type { Code, Extension, State, Tokenizer } from "micromark-util-types";
 
 declare module "micromark-util-types" {
@@ -47,7 +51,7 @@ const tokenizeContext: Tokenizer = function (effects, ok, nok) {
 
   function read(code: Code): ReturnType<State> {
     if (code === null) return nok(code);
-    const whitespace = code === -2 || markdownLineEnding(code) || unicodeWhitespace(code);
+    const whitespace = markdownLineEndingOrSpace(code) || unicodeWhitespace(code);
     if (phase === "value") {
       if (escaped) escaped = false;
       else if (code === 92) escaped = true;
