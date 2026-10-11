@@ -3,6 +3,13 @@ import { unified, type Processor } from "unified";
 import { markdownLineEnding, unicodeWhitespace } from "micromark-util-character";
 import type { Code, Extension, State, Tokenizer } from "micromark-util-types";
 
+declare module "micromark-util-types" {
+  interface TokenTypeMap {
+    atriumContext: "atriumContext";
+    atriumContextData: "atriumContextData";
+  }
+}
+
 const UID_PATTERN = "[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const LOCATOR_PATTERN = new RegExp(
   `^(?:atrium://uid/|uid:)(${UID_PATTERN})(?:\\?([^#\\s]*))?$`,
@@ -10,6 +17,7 @@ const LOCATOR_PATTERN = new RegExp(
 );
 const CONTEXT_KEYS = new Set(["rel", "why", "fallback"]);
 const CONTEXT_ATTRIBUTES = /^\{((?:\s*(?:rel|why|fallback)="(?:\\.|[^"\\])*"\s*)+)\}/;
+const plainMarkdownParser = unified().use(remarkParse);
 const markdownParser = unified().use(remarkParse).use(remarkAtriumContextSyntax);
 
 /** Keep context strings literal before emphasis/code/link parsing. Only the
@@ -17,16 +25,17 @@ const markdownParser = unified().use(remarkParse).use(remarkAtriumContextSyntax)
 const tokenizeContext: Tokenizer = function (effects, ok, nok) {
   const last = this.events.at(-1);
   if (last?.[0] !== "exit" || last[1].type !== "link") return nok;
-  const destination = this.events.findLast(
-    ([action, token]) => action === "exit" && token.type === "resourceDestinationString",
-  );
-  if (!destination || !/^(?:atrium:\/\/uid\/|uid:)/i.test(this.sliceSerialize(destination[1]))) {
-    return nok;
-  }
+  // Parse only this link: decode its Markdown escapes/entities without
+  // borrowing a prior inline destination for a reference-style or empty link.
+  const paragraph = plainMarkdownParser.parse(this.sliceSerialize(last[1])).children[0];
+  const link = paragraph?.type === "paragraph" ? paragraph.children[0] : undefined;
+  if (link?.type !== "link" || parseAtriumLink(link.url)?.kind !== "object") return nok;
+  const href = link.url;
   let phase: "key" | "quote" | "value" | "after" = "key";
   let key = "";
   let escaped = false;
-  const token = effects.enter("data");
+  const token = effects.enter("atriumContext");
+  effects.enter("atriumContextData");
   const context = this;
   return start;
 
@@ -48,9 +57,10 @@ const tokenizeContext: Tokenizer = function (effects, ok, nok) {
       phase = "value";
     } else if (code === 125 && phase === "after") {
       effects.consume(code);
-      effects.exit("data");
+      effects.exit("atriumContextData");
+      effects.exit("atriumContext");
       const raw = context.sliceSerialize(token);
-      return CONTEXT_ATTRIBUTES.exec(raw)?.[0] === raw ? ok : nok;
+      return contextAttributes(href, raw)?.attributes === raw ? ok : nok;
     } else {
       if (whitespace) {
         if (phase === "key" && key.length > 0) return nok(code);
@@ -65,7 +75,15 @@ const tokenizeContext: Tokenizer = function (effects, ok, nok) {
         if (![...CONTEXT_KEYS].some((field) => field.startsWith(key))) return nok(code);
       }
     }
-    effects.consume(code);
+    if (markdownLineEnding(code)) {
+      effects.exit("atriumContextData");
+      effects.enter("lineEnding");
+      effects.consume(code);
+      effects.exit("lineEnding");
+      effects.enter("atriumContextData");
+    } else {
+      effects.consume(code);
+    }
     return read;
   }
 };
@@ -74,6 +92,24 @@ function remarkAtriumContextSyntax(this: Processor) {
   const data = this.data();
   const extension: Extension = { text: { 123: { tokenize: tokenizeContext } } };
   (data.micromarkExtensions ??= []).push(extension);
+  (data.fromMarkdownExtensions ??= []).push({
+    enter: {
+      atriumContext(token) {
+        // Keep URLs/emails out of GFM's text autolink transform. This literal
+        // is removed by the remark adapter before any HTML rendering.
+        this.enter({ type: "html", value: "" }, token);
+        this.buffer();
+      },
+    },
+    exit: {
+      atriumContext(token) {
+        this.resume();
+        const node = this.stack.at(-1);
+        if (node?.type === "html") node.value = this.sliceSerialize(token);
+        this.exit(token);
+      },
+    },
+  });
 }
 
 export type AtriumLink =
@@ -157,10 +193,15 @@ function contextualLink(node: MarkdownNode, markdown: string) {
     return null;
   const end = node.position?.end.offset;
   if (end === undefined) return null;
-  const attributes = CONTEXT_ATTRIBUTES.exec(markdown.slice(end));
+  const context = contextAttributes(node.url, markdown.slice(end));
+  return context ? { ...context, end: end + context.attributes.length } : null;
+}
+
+function contextAttributes(href: string, source: string) {
+  const attributes = CONTEXT_ATTRIBUTES.exec(source);
   if (!attributes) return null;
-  const queryAt = node.url.indexOf("?");
-  const context = new URLSearchParams(queryAt === -1 ? "" : node.url.slice(queryAt + 1));
+  const queryAt = href.indexOf("?");
+  const context = new URLSearchParams(queryAt === -1 ? "" : href.slice(queryAt + 1));
   const seen = new Set<string>();
   for (const [, key = "", value = ""] of attributes[1]!.matchAll(
     /(rel|why|fallback)="((?:\\.|[^"\\])*)"/g,
@@ -174,9 +215,8 @@ function contextualLink(node: MarkdownNode, markdown: string) {
     }
   }
   return {
-    url: `${queryAt === -1 ? node.url : node.url.slice(0, queryAt)}?${context}`,
+    url: `${queryAt === -1 ? href : href.slice(0, queryAt)}?${context}`,
     attributes: attributes[0],
-    end: end + attributes[0].length,
   };
 }
 
@@ -196,32 +236,24 @@ export function remarkAtriumLinks(this: Processor) {
   remarkAtriumContextSyntax.call(this);
   return (tree: MarkdownNode, file: { readonly value: unknown }) => {
     const markdown = String(file.value);
-    if (!/(?:atrium:\/\/uid\/|uid:)/i.test(markdown) || !markdown.includes("{")) return;
+    if (!markdown.includes("{")) return;
     const visit = (parent: MarkdownNode) => {
       const children = parent.children;
       if (!children) return;
       for (let index = 0; index < children.length; index += 1) {
         const node = children[index]!;
         const context = contextualLink(node, markdown);
-        if (context && node.position) {
+        const suffix = children[index + 1];
+        if (
+          context &&
+          node.position &&
+          suffix?.type === "html" &&
+          suffix.value === context.attributes &&
+          suffix.position?.start.offset === node.position.end.offset
+        ) {
           node.url = context.url;
           node.position.end = afterText(node.position.end, context.attributes);
-          while (children[index + 1]) {
-            const tail = children[index + 1]!;
-            const start = tail.position?.start.offset;
-            const end = tail.position?.end.offset;
-            if (start === undefined || end === undefined || start >= context.end) break;
-            if (end <= context.end) {
-              children.splice(index + 1, 1);
-              continue;
-            }
-            // The syntax extension kept the attribute token literal. Remove
-            // exactly that prefix, leaving decoded prose and separators intact.
-            if (tail.type !== "text" || tail.value === undefined) break;
-            tail.value = tail.value.slice(context.end - start);
-            if (tail.position) tail.position.start = { ...node.position.end };
-            break;
-          }
+          children.splice(index + 1, 1);
         }
         visit(node);
       }
@@ -234,7 +266,7 @@ export function remarkAtriumLinks(this: Processor) {
  * the label boundary so a decoded destination or matching title cannot cause a
  * substring replacement in the wrong place. Code/images stay as authored. */
 export function normalizeAtriumMarkdown(markdown: string): string {
-  if (!/(?:atrium:\/\/uid\/|uid:)/i.test(markdown) || !markdown.includes("{")) return markdown;
+  if (!markdown.includes("{")) return markdown;
   const edits: Array<{ start: number; end: number; text: string }> = [];
   const visit = (node: MarkdownNode) => {
     const context = contextualLink(node, markdown);

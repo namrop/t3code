@@ -85,6 +85,13 @@ describe("Atrium object navigation", () => {
 });
 
 describe("Atrium contextual Markdown", () => {
+  it.each(["\n", "\r\n"])("supports multiline metadata with %j separators", (newline) => {
+    expect(
+      normalizeAtriumMarkdown(
+        `[A](${REF}){rel="review"${newline}why="Read"${newline}fallback="source"} after`,
+      ),
+    ).toBe(`[A](${REF}?rel=review&why=Read&fallback=source) after`);
+  });
   it("decodes authored query entities before adding body context", () => {
     expect(
       normalizeAtriumMarkdown(

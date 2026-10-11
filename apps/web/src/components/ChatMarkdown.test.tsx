@@ -73,7 +73,76 @@ function codeButton(renderer: ReactTestRenderer, label: string) {
   return button.props as ComponentProps<typeof Button>;
 }
 
+async function checkMarkdown(text: string, assertions: (renderer: ReactTestRenderer) => void) {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  let renderer: ReactTestRenderer | undefined;
+  try {
+    await act(async () => {
+      renderer = create(<ChatMarkdown cwd={undefined} parseRawHtml={false} text={text} />);
+    });
+    assertions(renderer!);
+  } finally {
+    await act(async () => renderer?.unmount());
+    vi.unstubAllGlobals();
+  }
+}
+
+function renderedText(node: ReactTestInstance | string): string {
+  return typeof node === "string" ? node : node.children.map(renderedText).join("");
+}
+
 describe("ChatMarkdown Atrium navigation", () => {
+  const ref = "atrium://uid/01900000-0000-7000-8000-000000000001";
+  it.each(['fallback="url:https://example.com"', 'why="www.example.com and person@example.com"'])(
+    "consumes context without creating GFM autolinks: %s",
+    (attributes) =>
+      checkMarkdown(`[A](${ref}){${attributes}} after`, (renderer) => {
+        expect(renderer.root.findAllByType("a")).toHaveLength(1);
+        expect(renderedText(renderer.root.findByType("p"))).toBe("A after");
+      }),
+  );
+
+  it.each(["\n", "\r\n"])("renders multiline context with %j separators", (newline) =>
+    checkMarkdown(
+      `[A](${ref}){rel="review"${newline}why="Read"${newline}fallback="source"} after`,
+      (renderer) => {
+        expect(renderer.root.findByType("a").props.href).toContain("fallback=source");
+        expect(renderedText(renderer.root.findByType("p"))).toBe("A after");
+      },
+    ),
+  );
+
+  it.each(["atrium&#58;//uid/", String.raw`atrium\://uid/`])(
+    "protects Markdown-decoded Atrium destinations: %s",
+    (scheme) =>
+      checkMarkdown(
+        `[A](${scheme}01900000-0000-7000-8000-000000000001){why="Read \u0060context"} [External](https://example.com) \u0060`,
+        (renderer) => {
+          expect(renderer.root.findAllByType("a")).toHaveLength(2);
+          expect(renderer.root.findAllByType("a")[1]?.props.href).toBe("https://example.com");
+        },
+      ),
+  );
+
+  it.each(["[Site][site]", "[Site]()"])(
+    "does not borrow the preceding Atrium destination for %s",
+    (link) =>
+      checkMarkdown(
+        `[A](${ref}) ${link}{why="*italic* &amp;"}\n\n[site]: https://example.com`,
+        (renderer) => {
+          expect(renderedText(renderer.root.findByType("em"))).toBe("italic");
+          expect(renderedText(renderer.root.findByType("p"))).toContain('&"}');
+        },
+      ),
+  );
+
+  it.each(['why="one" why="*italic*"', String.raw`why="\q *italic*"`])(
+    "leaves rejected contexts as ordinary Markdown: %s",
+    (attributes) =>
+      checkMarkdown(`[A](${ref}){${attributes}}`, (renderer) => {
+        expect(renderedText(renderer.root.findByType("em"))).toBe("italic");
+      }),
+  );
   it.each(["", "*", "`"])(
     "keeps following links and separators when context contains %s",
     async (delimiter) => {
