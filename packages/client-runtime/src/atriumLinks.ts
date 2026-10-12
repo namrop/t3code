@@ -122,6 +122,7 @@ export type AtriumLink =
       readonly uid: string;
       readonly reference: string;
       readonly canonicalReference: string;
+      readonly canonicalContextReference: string;
       readonly readerUrl: string;
       readonly rel?: string;
       readonly why?: string;
@@ -171,6 +172,7 @@ export function parseAtriumLink(reference: string): AtriumLink | null {
     uid,
     reference,
     canonicalReference,
+    canonicalContextReference: `${canonicalReference}${match[2] === undefined ? "" : `?${query}`}`,
     readerUrl: reader.href,
     ...(context.has("rel") ? { rel: context.get("rel")! } : {}),
     ...(context.has("why") ? { why: context.get("why")! } : {}),

@@ -42,6 +42,31 @@ describe("Atrium object navigation", () => {
     });
   });
 
+  it.each([REF, `uid:${UID}`])(
+    "copies canonical identity and intact query context from %s",
+    (base) => {
+      const suffix =
+        "?rel=review&why=Read%20the%20object&fallback=url%3Ahttps%3A%2F%2Fexample.com%2Fsource";
+      const link = parseAtriumLink(base + suffix);
+      if (link?.kind !== "object") throw new Error("Missing object link");
+      expect(link.canonicalContextReference).toBe(REF + suffix);
+      expect(parseAtriumLink(link.canonicalContextReference)).toMatchObject({
+        kind: "object",
+        uid: UID,
+        rel: link.rel,
+        why: link.why,
+        fallback: link.fallback,
+      });
+    },
+  );
+
+  it("copies context-free and explicitly empty queries without adding metadata", () => {
+    const bare = parseAtriumLink(`uid:${UID}`);
+    const empty = parseAtriumLink(`uid:${UID}?`);
+    expect(bare?.kind === "object" && bare.canonicalContextReference).toBe(REF);
+    expect(empty?.kind === "object" && empty.canonicalContextReference).toBe(REF + "?");
+  });
+
   it.each([
     "atrium://beam/example",
     "atrium://bundle/example",

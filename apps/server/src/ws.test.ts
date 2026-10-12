@@ -1,6 +1,9 @@
 import { assert, it } from "@effect/vitest";
 import {
+  AuthOrchestrationReadScope,
   ORCHESTRATION_PROTOCOL_VERSION,
+  WS_METHODS,
+  WsRpcGroup,
   type ServerConfig,
   type ServerConfigStreamEvent,
 } from "@t3tools/contracts";
@@ -16,8 +19,13 @@ import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import { HttpClient, HttpClientResponse } from "effect/http";
+import * as RpcTest from "effect/rpc/RpcTest";
 import { ChildProcessSpawner } from "effect/process";
 
+import * as AtriumObjectReader from "./atrium/AtriumObjectReader.ts";
+import { RPC_REQUIRED_SCOPES, rpcScopeAuthorizationLayer } from "./auth/RpcAuthorization.ts";
+import * as Ws from "./ws.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import {
   hasCompatibleOrchestrationProtocol,
@@ -25,6 +33,68 @@ import {
   shouldUseBoundedThreadSnapshot,
   withLateEditorConfig,
 } from "./ws.ts";
+
+const atriumRpcGroup = WsRpcGroup.omit(
+  ...[...WsRpcGroup.requests.keys()].filter(
+    (tag): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, "atrium.readObject"> =>
+      tag !== WS_METHODS.atriumReadObject,
+  ),
+);
+
+it.effect.each([200, 404])(
+  "serves Atrium object reads through the thin RPC handler (HTTP %s)",
+  (status) =>
+    Effect.gen(function* () {
+      assert.isDefined(Ws.readAtriumObject);
+      const uid = "01900000-0000-7000-8000-000000000001";
+      const object = {
+        uid,
+        path: "01_example/example.md",
+        kind: "note",
+        body: "# Example\n",
+        frontmatter: { title: "Example object" },
+      };
+      const client = yield* RpcTest.makeClient(atriumRpcGroup).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            atriumRpcGroup.toLayerHandler(WS_METHODS.atriumReadObject, Ws.readAtriumObject).pipe(
+              Layer.provide(AtriumObjectReader.layer),
+              Layer.provide(
+                Layer.succeed(
+                  HttpClient.HttpClient,
+                  HttpClient.make((request) =>
+                    Effect.succeed(
+                      HttpClientResponse.fromWeb(
+                        request,
+                        Response.json({ ok: true, object }, { status }),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            rpcScopeAuthorizationLayer([AuthOrchestrationReadScope]),
+          ),
+        ),
+      );
+      if (status === 404) {
+        const error = yield* client[WS_METHODS.atriumReadObject]({ uid }).pipe(Effect.flip);
+        assert.equal(error._tag, "AtriumReadObjectError");
+        if (error._tag === "AtriumReadObjectError") {
+          assert.equal(error.uid, uid);
+          assert.equal(error.reason, "not-found");
+        }
+      } else {
+        assert.deepEqual(yield* client[WS_METHODS.atriumReadObject]({ uid }), {
+          uid,
+          title: object.frontmatter.title,
+          path: object.path,
+          kind: object.kind,
+          body: object.body,
+        });
+      }
+    }),
+);
 
 it("accepts only the current orchestration protocol before websocket RPC setup", () => {
   assert.isTrue(

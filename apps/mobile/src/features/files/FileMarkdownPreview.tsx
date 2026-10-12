@@ -12,7 +12,7 @@ import {
 } from "react-native-nitro-markdown";
 import { RefreshControl, ScrollView, Text as NativeText, View } from "react-native";
 
-import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
+import { useMarkdownLinkOpener } from "../../lib/useMarkdownLinkOpener";
 import { useFontFamily } from "../../lib/useFontFamily";
 import {
   resolveMarkdownFontSizes,
@@ -39,7 +39,10 @@ interface MarkdownPreviewStyles {
   readonly nativeTextStyle: NativeMarkdownTextStyle;
 }
 
-function useMarkdownPreviewStyles(renderImage?: MarkdownImageRenderer): MarkdownPreviewStyles {
+function useMarkdownPreviewStyles(
+  onLinkPress: (href: string) => void,
+  renderImage?: MarkdownImageRenderer,
+): MarkdownPreviewStyles {
   const { appearance } = useAppearancePreferences();
   const markdownFontSizes = useMemo(
     () => resolveMarkdownFontSizes(appearance.baseFontSize),
@@ -71,7 +74,7 @@ function useMarkdownPreviewStyles(renderImage?: MarkdownImageRenderer): Markdown
             className="font-t3-medium"
             onPress={() => {
               if (href) {
-                void tryOpenExternalUrl(href, "markdown-link");
+                onLinkPress(href);
               }
             }}
             style={{
@@ -190,6 +193,7 @@ function useMarkdownPreviewStyles(renderImage?: MarkdownImageRenderer): Markdown
     markdownFontSizes,
     mediumFontFamily,
     nativeMarkdownTypography,
+    onLinkPress,
     regularFontFamily,
     renderImage,
     strong,
@@ -253,14 +257,15 @@ export function FileMarkdownPreview(props: {
     },
     [markdownDirectory, props.environmentId, props.threadId, props.captured],
   );
-  const styles = useMarkdownPreviewStyles(renderImage);
+  const onLinkPress = useMarkdownLinkOpener({
+    environmentId: props.environmentId,
+    threadId: props.threadId,
+  });
+  const styles = useMarkdownPreviewStyles(onLinkPress, renderImage);
   const normalizedMarkdown = useMemo(
     () => normalizeAtriumMarkdown(props.markdown),
     [props.markdown],
   );
-  const onLinkPress = useCallback((href: string) => {
-    void tryOpenExternalUrl(href, "markdown-link");
-  }, []);
 
   return (
     <ScrollView

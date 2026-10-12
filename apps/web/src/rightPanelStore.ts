@@ -8,6 +8,7 @@
  * workspace paths, and diff/files remain singleton surfaces.
  */
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { parseAtriumLink } from "@t3tools/client-runtime/atrium-links";
 import {
   EnvironmentId,
   ThreadId,
@@ -24,6 +25,7 @@ const RIGHT_PANEL_KINDS = [
   "diff",
   "files",
   "file",
+  "atrium",
   "preview",
   "device",
   "terminal",
@@ -53,6 +55,15 @@ export type RightPanelSurface =
     }
   | { id: "diff"; kind: "diff" }
   | { id: "files"; kind: "files" }
+  | {
+      id: `atrium:${string}`;
+      kind: "atrium";
+      uid: string;
+      reference: string;
+      title: string;
+      /** Repeated link opens request a fresh current-object read, not another tab. */
+      readRequestId: number;
+    }
   | {
       id: `file:${string}` | `attachment:${string}`;
       kind: "file";
@@ -92,7 +103,8 @@ const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
 // v11 stops persisting the pull-request list's shared panel, so a restart opens the page fresh.
 // v12 adds the device surface.
 // v14 removes the agents surface; lineage lives in the thread title bar.
-const RIGHT_PANEL_STORAGE_VERSION = 14;
+// v15 adds UID-keyed, read-only Atrium object surfaces.
+const RIGHT_PANEL_STORAGE_VERSION = 15;
 
 /** A fixed workspace-level ref: each PR surface carries its own real environment. */
 export const PULL_REQUESTS_PANEL_REF = scopeThreadRef(
@@ -135,12 +147,14 @@ interface RightPanelStoreState {
   ) => boolean;
   open: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request">,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "atrium">,
   ) => void;
   openDevice: (ref: ScopedThreadRef, target: DeviceTabTarget, automatic?: boolean) => void;
   renameDevice: (ref: ScopedThreadRef, surfaceId: string, title: string) => void;
   openBrowser: (ref: ScopedThreadRef, tabId: string | null) => void;
   openFile: (ref: ScopedThreadRef, relativePath: string, line?: number) => void;
+  openAtrium: (ref: ScopedThreadRef, reference: string, title?: string) => boolean;
+  updateAtriumTitle: (ref: ScopedThreadRef, uid: string, title: string) => void;
   openAttachment: (ref: ScopedThreadRef, attachment: ChatFileAttachment) => void;
   openPullRequest: (
     ref: ScopedThreadRef,
@@ -174,7 +188,7 @@ interface RightPanelStoreState {
   toggleVisibility: (ref: ScopedThreadRef) => void;
   toggle: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request">,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "atrium">,
   ) => void;
   setThreadPanelOpen: (
     ref: ScopedThreadRef,
@@ -197,7 +211,7 @@ const DEFAULT_THREAD_PANEL_VISIBILITY: ThreadPanelVisibility = {
 };
 
 const singletonSurface = (
-  kind: Exclude<RightPanelKind, "file" | "preview" | "terminal" | "pull-request">,
+  kind: Exclude<RightPanelKind, "file" | "preview" | "terminal" | "pull-request" | "atrium">,
 ): RightPanelSurface => {
   switch (kind) {
     case "diff":
@@ -439,6 +453,29 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                     // Removed surfaces: plans render inline, agents in thread lineage.
                     const kind = (surface as { kind?: string }).kind;
                     if (kind === "plan" || kind === "agents") return [];
+                    if (surface.kind === "atrium") {
+                      const link =
+                        typeof surface.reference === "string"
+                          ? parseAtriumLink(surface.reference)
+                          : null;
+                      if (
+                        link?.kind !== "object" ||
+                        surface.uid !== link.uid ||
+                        surface.id !== `atrium:${link.uid}`
+                      )
+                        return [];
+                      return [
+                        {
+                          id: `atrium:${link.uid}`,
+                          kind: "atrium",
+                          uid: link.uid,
+                          reference: link.reference,
+                          title:
+                            typeof surface.title === "string" ? surface.title : "Atrium object",
+                          readRequestId: 0,
+                        },
+                      ];
+                    }
                     if (surface.kind === "file") {
                       const revealLine =
                         typeof surface.revealLine === "number" &&
@@ -697,6 +734,54 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
                     entry.id === surface.id ? surface : entry,
                   )
                 : [...withoutStandaloneExplorer, surface],
+            };
+          }),
+        ),
+      openAtrium: (ref, reference, title) => {
+        const link = parseAtriumLink(reference);
+        if (link?.kind !== "object") return false;
+        set((state) =>
+          userAction(state, scopedThreadKey(ref), (current) => {
+            const id = `atrium:${link.uid}` as const;
+            const existing = current.surfaces.find(
+              (surface): surface is Extract<RightPanelSurface, { kind: "atrium" }> =>
+                surface.kind === "atrium" && surface.id === id,
+            );
+            const surface: Extract<RightPanelSurface, { kind: "atrium" }> = {
+              id,
+              kind: "atrium",
+              uid: link.uid,
+              reference: link.reference,
+              title: title?.trim() || existing?.title || "Atrium object",
+              readRequestId: (existing?.readRequestId ?? 0) + 1,
+            };
+            return {
+              ...current,
+              isOpen: true,
+              activeSurfaceId: id,
+              surfaces: existing
+                ? current.surfaces.map((entry) => (entry.id === id ? surface : entry))
+                : [...current.surfaces, surface],
+            };
+          }),
+        );
+        return true;
+      },
+      updateAtriumTitle: (ref, uid, title) =>
+        set((state) =>
+          automaticUpdate(state, scopedThreadKey(ref), (current) => {
+            if (
+              !current.surfaces.some(
+                (surface) =>
+                  surface.kind === "atrium" && surface.uid === uid && surface.title !== title,
+              )
+            )
+              return current;
+            return {
+              ...current,
+              surfaces: current.surfaces.map((surface) =>
+                surface.kind === "atrium" && surface.uid === uid ? { ...surface, title } : surface,
+              ),
             };
           }),
         ),
@@ -1005,6 +1090,10 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
         ),
       }),
       migrate: migratePersistedRightPanelState,
+      merge: (persistedState, currentState) => ({
+        ...currentState,
+        ...migratePersistedRightPanelState(persistedState),
+      }),
     },
   ),
 );

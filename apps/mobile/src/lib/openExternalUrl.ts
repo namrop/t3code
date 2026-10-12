@@ -11,6 +11,19 @@ const ExternalUrlTarget = Schema.Literals([
 
 export type ExternalUrlTarget = typeof ExternalUrlTarget.Type;
 
+export type AtriumObjectRouteParams = {
+  readonly environmentId: string;
+  readonly threadId?: string;
+  /** The authored reference, including normalized body/query context. */
+  readonly reference: string;
+};
+
+export interface AtriumReaderScope {
+  readonly environmentId: string;
+  readonly threadId?: string | null;
+  readonly openAtriumObject: (params: AtriumObjectRouteParams) => void;
+}
+
 export class ExternalUrlOpenError extends Schema.TaggedError<ExternalUrlOpenError>()(
   "ExternalUrlOpenError",
   {
@@ -39,11 +52,23 @@ function externalUrlMetadata(url: string): { readonly scheme: string; readonly h
   }
 }
 
-export async function tryOpenExternalUrl(url: string, target: ExternalUrlTarget): Promise<boolean> {
+export async function tryOpenExternalUrl(
+  url: string,
+  target: ExternalUrlTarget,
+  atriumScope?: AtriumReaderScope,
+): Promise<boolean> {
   const atrium = target === "markdown-link" ? parseAtriumLink(url) : null;
   if (atrium?.kind === "unsupported") {
     Alert.alert("Unsupported Atrium link", atrium.message);
     return false;
+  }
+  if (atrium?.kind === "object" && atriumScope) {
+    atriumScope.openAtriumObject({
+      environmentId: atriumScope.environmentId,
+      ...(atriumScope.threadId ? { threadId: atriumScope.threadId } : {}),
+      reference: atrium.reference,
+    });
+    return true;
   }
   const destination = atrium?.kind === "object" ? atrium.readerUrl : url;
   try {

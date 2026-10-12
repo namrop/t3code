@@ -104,6 +104,7 @@ import { useFontFamily } from "../../lib/useFontFamily";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import { copyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
+import { useMarkdownLinkOpener } from "../../lib/useMarkdownLinkOpener";
 import { downloadAndShareAttachment } from "../../lib/attachmentDownload";
 import { hasWideMarkdownBlock } from "../../lib/wideMarkdownBlocks";
 import { faviconUrlForOrigin } from "@t3tools/shared/favicon";
@@ -2238,11 +2239,15 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   const iconSubtleColor = theme["--color-icon-subtle"];
   const screenColor = theme["--color-screen"];
   const userBubbleColor = theme["--color-user-bubble"];
+  const openMarkdownLink = useMarkdownLinkOpener({
+    environmentId: props.environmentId,
+    threadId: props.threadId,
+  });
   const onMarkdownLinkPress = useCallback(
     (href: string) => {
       const presentation = resolveMarkdownLinkPresentation(href);
       if (presentation.kind === "atrium") {
-        void tryOpenExternalUrl(presentation.href, "markdown-link");
+        openMarkdownLink(presentation.href);
         return;
       }
       if (presentation.kind === "file") {
@@ -2332,7 +2337,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         void tryOpenExternalUrl(presentation.href, "markdown-link");
       }
     },
-    [props.environmentId, props.threadId, props.workspaceRoot, navigation],
+    [props.environmentId, props.threadId, props.workspaceRoot, navigation, openMarkdownLink],
   );
   const markdownLinkHandlers = useMemo<MarkdownLinkHandlers>(
     () => ({

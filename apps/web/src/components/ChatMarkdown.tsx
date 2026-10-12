@@ -49,7 +49,10 @@ import {
   classifyMarkdownImageSource,
   markdownImageSourceFragment,
 } from "@t3tools/client-runtime/markdown-images";
-import { inlineCodeFilePathCandidate } from "@t3tools/client-runtime/markdown-links";
+import {
+  inlineCodeFilePathCandidate,
+  parseMarkdownFileLink,
+} from "@t3tools/client-runtime/markdown-links";
 import { mediaFileReference, mediaUrlReference } from "@t3tools/client-runtime/media-reference";
 import { mediaKindFromPath, mediaMimeTypeFromExtension } from "@t3tools/shared/filePreview";
 import * as Cause from "effect/Cause";
@@ -225,6 +228,8 @@ interface ChatMarkdownProps {
   /** Directory that anchors relative links and images; defaults to `cwd`. Set
       to the file's own directory when rendering a markdown file. */
   imageBaseDir?: string | undefined;
+  /** Atrium bodies are not workspace files: local paths must stay inert. */
+  workspaceLinks?: boolean | undefined;
   onImageExpand?: ((preview: ExpandedImagePreview) => void) | undefined;
   extraRemarkPlugins?: NonNullable<ReactMarkdownOptions["remarkPlugins"]>;
   /** Renders a `t3-context://` link as a chip; without it the link shows its label as text. */
@@ -2445,6 +2450,7 @@ function useChatMarkdownState({
   renderContextReference,
   headingLevelOffset = 0,
   githubMedia = false,
+  workspaceLinks = true,
 }: ChatMarkdownProps) {
   const { resolvedTheme } = useTheme();
   const [localMediaPreview, setLocalMediaPreview] = useState<ExpandedImagePreview | null>(null);
@@ -2557,6 +2563,7 @@ function useChatMarkdownState({
       string,
       NonNullable<ReturnType<typeof resolveMarkdownFileLinkMeta>>
     >();
+    if (!workspaceLinks) return metaByHref;
     for (const href of extractMarkdownLinkHrefs(renderCodexFileCitationsAsMarkdown(text))) {
       if (parseComposerContextHref(href)) continue;
       const normalizedHref = normalizeMarkdownLinkHrefKey(href);
@@ -2567,9 +2574,10 @@ function useChatMarkdownState({
       }
     }
     return metaByHref;
-  }, [cwd, imageBaseDir, text]);
+  }, [cwd, imageBaseDir, text, workspaceLinks]);
   const inlineCodeFileLinkMetaByText = useMemo(() => {
     const metaByText = new Map<string, MarkdownFileLinkMeta>();
+    if (!workspaceLinks) return metaByText;
     for (const span of extractInlineCodeSpans(text)) {
       if (metaByText.has(span)) continue;
       const meta = resolveInlineCodeFileLinkMeta(span, cwd, imageBaseDir ?? cwd);
@@ -2578,7 +2586,7 @@ function useChatMarkdownState({
       }
     }
     return metaByText;
-  }, [cwd, imageBaseDir, text]);
+  }, [cwd, imageBaseDir, text, workspaceLinks]);
   const fileLinkParentSuffixByPath = useMemo(() => {
     const filePaths = [
       ...[...markdownFileLinkMetaByHref.values()].map((meta) => meta.filePath),
@@ -2833,6 +2841,7 @@ function useChatMarkdownState({
   const componentState = useMemo(
     () => ({
       cwd,
+      workspaceLinks,
       diffThemeName,
       environmentId,
       expandMedia,
@@ -2865,6 +2874,7 @@ function useChatMarkdownState({
     [
       cwd,
       diffThemeName,
+      workspaceLinks,
       environmentId,
       expandMedia,
       fileLinkChip,
@@ -3035,6 +3045,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
       fileLinkChip,
       renderContextReference,
       text,
+      workspaceLinks,
     } = use(ChatMarkdownRendererContext);
     const citation = href ? parseAssistantCitationHref(href) : null;
     if (citation) return <AssistantCitationChip citation={citation} />;
@@ -3069,10 +3080,23 @@ const CHAT_MARKDOWN_COMPONENTS = {
 
     if (atriumLink?.kind === "object") href = atriumLink.readerUrl;
     const normalizedHref = href ? normalizeMarkdownLinkHrefKey(href) : "";
-    const fileLinkMeta = normalizedHref
-      ? (markdownFileLinkMetaByHref.get(normalizedHref) ??
-        resolveMarkdownFileLinkMeta(normalizedHref, cwd, imageBaseDir ?? cwd))
-      : null;
+    // URL transforms already reject unsupported schemes. With no workspace authority,
+    // also suppress file-shaped destinations and scheme-less local paths, not mail or //hosts.
+    if (
+      !workspaceLinks &&
+      (!normalizedHref ||
+        parseMarkdownFileLink(normalizedHref) !== null ||
+        (!normalizedHref.startsWith("#") &&
+          !normalizedHref.startsWith("//") &&
+          !/^[a-z][a-z0-9+.-]*:/i.test(normalizedHref)))
+    ) {
+      return <span data-markdown-copy={authoredLink || undefined}>{children}</span>;
+    }
+    const fileLinkMeta =
+      workspaceLinks && normalizedHref
+        ? (markdownFileLinkMetaByHref.get(normalizedHref) ??
+          resolveMarkdownFileLinkMeta(normalizedHref, cwd, imageBaseDir ?? cwd))
+        : null;
     if (!fileLinkMeta) {
       const faviconHost = resolveExternalWebLinkHost(href);
       const pullRequestAutolink = String(
@@ -3112,6 +3136,28 @@ const CHAT_MARKDOWN_COMPONENTS = {
           rel={isSameDocumentLink ? undefined : "noopener noreferrer"}
           onClick={(event) => {
             onClick?.(event);
+            if (atriumLink?.kind === "object") {
+              if (
+                !event.defaultPrevented &&
+                (event.button === undefined || event.button === 0) &&
+                !event.metaKey &&
+                !event.ctrlKey &&
+                !event.shiftKey &&
+                !event.altKey &&
+                threadRef
+              ) {
+                if (
+                  useRightPanelStore
+                    .getState()
+                    .openAtrium(threadRef, atriumLink.reference, hastPlainTextDeep(node))
+                ) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }
+              }
+              // Without a thread scope (or with modifiers), keep the real HTTPS escape hatch.
+              return;
+            }
             if (isSameDocumentLink && href) {
               handleMarkdownFragmentClick(event, href);
               return;
@@ -3202,7 +3248,11 @@ const CHAT_MARKDOWN_COMPONENTS = {
                 }
               },
               openExternal: (target) => api.shell.openExternal(target),
-              copyLink: (target) => writeTextToClipboard(atriumLink?.reference ?? target, "link"),
+              copyLink: (target) =>
+                writeTextToClipboard(
+                  atriumLink?.kind === "object" ? atriumLink.canonicalContextReference : target,
+                  "link",
+                ),
               updateThreadLink: updateThreadPullRequestLink,
               reportFailure: (operation, cause) => {
                 reportMarkdownActionFailure({ operation, target: href }, cause);
@@ -3225,7 +3275,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
             });
           }}
         >
-          {faviconHost && hastHasText(node) && !isPullRequestAutolink ? (
+          {faviconHost && hastHasText(node) && !isPullRequestAutolink && !atriumLink ? (
             <MarkdownExternalLinkContent host={faviconHost} plainText={plainHastText(node)}>
               {linkChildren}
             </MarkdownExternalLinkContent>
@@ -3300,10 +3350,10 @@ const CHAT_MARKDOWN_COMPONENTS = {
     );
   },
   code: function MarkdownCode({ node, children, className, ...props }) {
-    const { cwd, imageBaseDir, inlineCodeFileLinkMetaByText, fileLinkChip } = use(
+    const { cwd, imageBaseDir, inlineCodeFileLinkMetaByText, fileLinkChip, workspaceLinks } = use(
       ChatMarkdownRendererContext,
     );
-    if (node?.properties?.dataInlineCode != null) {
+    if (workspaceLinks && node?.properties?.dataInlineCode != null) {
       const codeText = nodeToPlainText(children);
       const fileLinkMeta =
         inlineCodeFileLinkMetaByText.get(codeText.trim()) ??
@@ -3331,6 +3381,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
       imageBaseDir,
       threadRef,
       renderContextReference,
+      workspaceLinks,
     } = use(ChatMarkdownRendererContext);
     const imageExpand = use(MarkdownLinkContext) ? undefined : expandMedia;
     const contextReference = typeof src === "string" ? parseComposerContextHref(src) : null;
@@ -3429,7 +3480,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
         />
       );
     }
-    if (imageSource._tag === "WorkspaceFile" && threadRef) {
+    if (workspaceLinks && imageSource._tag === "WorkspaceFile" && threadRef) {
       return (
         <ChatMarkdownAssetImage
           environmentId={threadRef.environmentId}

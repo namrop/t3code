@@ -687,6 +687,9 @@ const DevicePanel = lazy(() =>
   import("./device/DevicePanel").then((module) => ({ default: module.DevicePanel })),
 );
 const FilePreviewPanel = lazy(() => import("./files/FilePreviewPanel"));
+const AtriumPanel = lazy(() =>
+  import("./atrium/AtriumPanel").then((module) => ({ default: module.AtriumPanel })),
+);
 const EMPTY_PENDING_FILE_SURFACE_IDS: ReadonlySet<string> = new Set();
 const TYPE_TO_FOCUS_EDITABLE_SELECTOR = [
   "input",
@@ -10528,6 +10531,15 @@ export default function ChatView(props: ChatViewProps) {
           onSendAnnotation={(annotation, image) => {
             void onSend(undefined, "auto", "foreground", { annotation, image });
           }}
+        />
+      </Suspense>
+    ) : renderedRightPanelSurface?.kind === "atrium" ? (
+      <Suspense fallback={null}>
+        <AtriumPanel
+          key={`${activeThreadKey}:${renderedRightPanelSurface.id}`}
+          threadRef={activeThreadRef}
+          surface={renderedRightPanelSurface}
+          visible={rightPanelOpen}
         />
       </Suspense>
     ) : renderedRightPanelSurface?.kind === "terminal" ? (

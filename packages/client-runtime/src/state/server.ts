@@ -1057,6 +1057,14 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:provider:install-remove",
       tag: WS_METHODS.providerInstallRemove,
     }),
+    // Object identity is stable, but the current content is read afresh each
+    // time the viewer opens. No body is persisted in the client cache store.
+    readAtriumObject: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:atrium:read-object",
+      tag: WS_METHODS.atriumReadObject,
+      staleTimeMs: 0,
+      idleTtlMs: 0,
+    }),
     traceDiagnostics: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:server:trace-diagnostics",
       tag: WS_METHODS.serverGetTraceDiagnostics,

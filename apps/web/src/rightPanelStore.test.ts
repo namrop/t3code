@@ -27,6 +27,121 @@ beforeEach(() => {
 });
 
 describe("rightPanelStore", () => {
+  const atriumUid = "01900000-0000-7000-8000-000000000001";
+  const atriumReference = `atrium://uid/${atriumUid}`;
+
+  it("reuses an Atrium UID tab while replacing link context and requesting a current read", () => {
+    const store = useRightPanelStore.getState();
+    store.open(refA, "diff");
+    expect(store.openAtrium(refA, `${atriumReference}?why=First`, "Object")).toBe(true);
+    const first = selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA);
+    expect(first).toMatchObject({ kind: "atrium", uid: atriumUid, title: "Object" });
+    store.openAtrium(refA, `${atriumReference}?rel=review&why=Second`, "Review");
+    const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(state.surfaces.map((surface) => surface.kind)).toEqual(["diff", "atrium"]);
+    expect(state.surfaces[1]).toMatchObject({
+      reference: `${atriumReference}?rel=review&why=Second`,
+      title: "Review",
+      readRequestId: 2,
+    });
+    expect(state.activeSurfaceId).toBe(`atrium:${atriumUid}`);
+  });
+
+  it.each(["atrium://beam/example", `${atriumReference}?revision=old`, "https://example.com"])(
+    "leaves all panel state unchanged for unsupported Atrium reference %s",
+    (reference) => {
+      const store = useRightPanelStore.getState();
+      store.open(refA, "files");
+      const before = useRightPanelStore.getState();
+      expect(store.openAtrium(refA, reference)).toBe(false);
+      expect(useRightPanelStore.getState()).toBe(before);
+    },
+  );
+
+  it("isolates Atrium contexts by thread and environment and reopens after closing", () => {
+    const store = useRightPanelStore.getState();
+    const otherEnvironment = scopeThreadRef("env-2" as EnvironmentId, refA.threadId);
+    store.openAtrium(refA, `${atriumReference}?why=Here`);
+    store.openAtrium(refB, `${atriumReference}?why=OtherThread`);
+    store.openAtrium(otherEnvironment, `${atriumReference}?why=OtherEnvironment`);
+    store.close(refA);
+    expect(
+      selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA),
+    ).toBeNull();
+    store.show(refA);
+    expect(
+      selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA),
+    ).toMatchObject({
+      reference: `${atriumReference}?why=Here`,
+    });
+    store.closeSurface(refA, `atrium:${atriumUid}`);
+    store.openAtrium(refA, atriumReference);
+    expect(
+      selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA),
+    ).toMatchObject({ reference: atriumReference });
+    expect(
+      selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refB),
+    ).toMatchObject({ reference: `${atriumReference}?why=OtherThread` });
+    expect(
+      selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, otherEnvironment),
+    ).toMatchObject({ reference: `${atriumReference}?why=OtherEnvironment` });
+    store.reconcileFileSurfaces(refA, false);
+    expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refA)).toBe("atrium");
+  });
+
+  it("restores only validated Atrium descriptors, not stored bodies or malformed identities", () => {
+    const surface = {
+      id: `atrium:${atriumUid}`,
+      kind: "atrium",
+      uid: atriumUid,
+      reference: `${atriumReference}?why=Read`,
+      title: "Object",
+      readRequestId: 8,
+      body: "not durable panel data",
+    };
+    const restored = migratePersistedRightPanelState({
+      byThreadKey: {
+        "env-1:thread-A": {
+          isOpen: true,
+          activeSurfaceId: surface.id,
+          surfaces: [
+            surface,
+            { ...surface, id: "atrium:bad" },
+            { ...surface, reference: "atrium://beam/example" },
+          ],
+        },
+      },
+    });
+    expect(restored.byThreadKey["env-1:thread-A"]).toEqual({
+      isOpen: true,
+      activeSurfaceId: surface.id,
+      surfaces: [
+        {
+          id: surface.id,
+          kind: "atrium",
+          uid: atriumUid,
+          reference: surface.reference,
+          title: "Object",
+          readRequestId: 0,
+        },
+      ],
+    });
+  });
+
+  it("updates the current Atrium title without treating the service response as a user choice", () => {
+    const store = useRightPanelStore.getState();
+    store.openAtrium(refA, atriumReference, "Authored label");
+    const revision = store.getUserActionRevision(refA);
+    store.updateAtriumTitle(refA, atriumUid, "Current title");
+    expect(
+      selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA),
+    ).toMatchObject({ title: "Current title" });
+    expect(store.getUserActionRevision(refA)).toBe(revision);
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refB).surfaces,
+    ).toEqual([]);
+  });
+
   it("gives each host/device its own tab and preserves renamed tabs", () => {
     const store = useRightPanelStore.getState();
     const android = {

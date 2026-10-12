@@ -19,6 +19,55 @@ afterEach(() => {
 });
 
 describe("tryOpenExternalUrl", () => {
+  it("opens scoped Atrium objects inside T3 and preserves the complete reference", async () => {
+    const reference =
+      "atrium://uid/01900000-0000-7000-8000-000000000001?rel=source&why=Read+first&fallback=url%3Ahttps%3A%2F%2Fexample.com";
+    const openAtriumObject = vi.fn();
+    await expect(
+      tryOpenExternalUrl(reference, "markdown-link", {
+        environmentId: "environment-1",
+        threadId: "thread-1",
+        openAtriumObject,
+      }),
+    ).resolves.toBe(true);
+    expect(openAtriumObject).toHaveBeenCalledExactlyOnceWith({
+      environmentId: "environment-1",
+      threadId: "thread-1",
+      reference,
+    });
+    expect(openURL).not.toHaveBeenCalled();
+  });
+
+  it("keeps environment-scoped draft links inside T3 even without a thread", async () => {
+    const reference = "uid:01900000-0000-7000-8000-000000000001";
+    const openAtriumObject = vi.fn();
+    await tryOpenExternalUrl(reference, "markdown-link", {
+      environmentId: "environment-1",
+      threadId: null,
+      openAtriumObject,
+    });
+    expect(openAtriumObject).toHaveBeenCalledExactlyOnceWith({
+      environmentId: "environment-1",
+      reference,
+    });
+    expect(openURL).not.toHaveBeenCalled();
+  });
+
+  it.each(["https://example.com", "mailto:hello@example.com", "file:///tmp/Note.md"])(
+    "does not reroute ordinary scoped links: %s",
+    async (reference) => {
+      openURL.mockResolvedValue(undefined);
+      const openAtriumObject = vi.fn();
+      await tryOpenExternalUrl(reference, "markdown-link", {
+        environmentId: "environment-1",
+        threadId: "thread-1",
+        openAtriumObject,
+      });
+      expect(openURL).toHaveBeenCalledExactlyOnceWith(reference);
+      expect(openAtriumObject).not.toHaveBeenCalled();
+    },
+  );
+
   it("opens an Atrium object in the estate reader without launching its OS scheme", async () => {
     openURL.mockResolvedValue(undefined);
     const reference =

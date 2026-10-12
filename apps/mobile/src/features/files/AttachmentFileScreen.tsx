@@ -2,7 +2,7 @@
 import { NativeHeaderToolbar, NativeStackScreenOptions } from "../../native/StackHeader";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { MenuAction } from "@react-native-menu/menu";
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Platform, ScrollView, View } from "react-native";
@@ -54,6 +54,7 @@ function AttachmentDocumentBody(props: {
   readonly document: ReturnType<typeof useAttachmentDocument>;
   readonly name: string;
   readonly environmentId: EnvironmentId | null;
+  readonly threadId: ThreadId | null;
   readonly nativeViewer: "pending" | "open" | "unavailable" | null;
   readonly nativeError: string | null;
   readonly onOpenNative: () => void;
@@ -127,7 +128,7 @@ function AttachmentDocumentBody(props: {
             cwd=""
             relativePath=""
             environmentId={props.environmentId}
-            threadId={null}
+            threadId={props.threadId}
             markdown={content.text}
             captured
           />
@@ -405,6 +406,7 @@ export function AttachmentFileScreen(props: AttachmentFileScreenProps) {
         document={document}
         name={params.name}
         environmentId={environmentId}
+        threadId={params.threadId ? ThreadId.make(params.threadId) : null}
         nativeViewer={nativeViewer}
         nativeError={nativeError}
         onOpenNative={() => {

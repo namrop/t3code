@@ -51,6 +51,7 @@ import {
   AcpRegistrySetProviderResult,
 } from "./acpRegistry.ts";
 import { ExternalLauncherError, LaunchEditorInput } from "./editor.ts";
+import { AtriumReadObjectError, AtriumReadObjectInput, AtriumReadObjectResult } from "./atrium.ts";
 import {
   AuthAccessStreamError,
   AuthAccessStreamEvent,
@@ -337,6 +338,9 @@ import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
 
 export const WS_METHODS = {
+  // Atrium object reader
+  atriumReadObject: "atrium.readObject",
+
   // Project registry methods
   projectsList: "projects.list",
   projectsAdd: "projects.add",
@@ -1146,6 +1150,12 @@ const WsProjectsReadFileRpc = Rpc.make(WS_METHODS.projectsReadFile, {
   error: Schema.Union([ProjectReadFileError, EnvironmentAuthorizationError]),
 });
 
+const WsAtriumReadObjectRpc = Rpc.make(WS_METHODS.atriumReadObject, {
+  payload: AtriumReadObjectInput,
+  success: AtriumReadObjectResult,
+  error: Schema.Union([AtriumReadObjectError, EnvironmentAuthorizationError]),
+});
+
 const WsProjectsWriteFileRpc = Rpc.make(WS_METHODS.projectsWriteFile, {
   payload: ProjectWriteFileInput,
   success: ProjectWriteFileResult,
@@ -1700,6 +1710,7 @@ export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthori
 ) {}
 
 export const WsRpcGroup = RpcGroup.make(
+  WsAtriumReadObjectRpc,
   WsServerProbeRpc,
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,

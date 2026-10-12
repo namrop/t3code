@@ -95,6 +95,18 @@ The quoted text and comment count toward the message limit.
 Mobile displays saved quotes and comments, but does not create citations or
 navigate to their sources.
 
+## Read Atrium objects
+
+Select an `atrium://uid/<UUIDv7>` link in a conversation or Markdown preview to
+read the current object inside T3 Code. Web and desktop use the right panel;
+mobile opens a reader screen with back navigation. Nested Atrium links open
+the same way. The environment must be able to reach Atrium Service.
+
+Refresh or retry a read to fetch the current content. Copying the Atrium link
+keeps its UID and link context, rather than substituting a file path. Choose
+**Open in estate reader** when you want the separate reader; modified browser
+clicks also retain that option. Other Atrium address classes are not supported.
+
 ## Recall a sent prompt
 
 Press `ArrowUp` in an empty composer to bring back the last prompt you sent in this thread. Press

@@ -1,4 +1,6 @@
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { selectActiveRightPanelSurface, useRightPanelStore } from "../rightPanelStore";
 import { act, type ComponentProps, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
@@ -9,6 +11,11 @@ import { GitHubIcon } from "./Icons";
 import { Button } from "./ui/button";
 import { setMarkdownTaskChecked } from "./files/filePreviewMode";
 
+const assetReads = vi.hoisted(() => vi.fn(() => ({ _tag: "Failure" })));
+vi.mock("../assets/assetUrls", () => ({
+  useAssetUrlState: assetReads,
+  useAssetUrlRefresh: () => vi.fn(),
+}));
 vi.mock("@effect/atom-react", () => ({ useAtomValue: () => null }));
 vi.mock("../hooks/useTheme", () => ({ useTheme: () => ({ resolvedTheme: "dark" }) }));
 vi.mock("../hooks/useSettings", async (importOriginal) => {
@@ -93,6 +100,248 @@ function renderedText(node: ReactTestInstance | string): string {
 
 describe("ChatMarkdown Atrium navigation", () => {
   const ref = "atrium://uid/01900000-0000-7000-8000-000000000001";
+  const threadRef = scopeThreadRef(
+    EnvironmentId.make("env-atrium"),
+    ThreadId.make("thread-atrium"),
+  );
+
+  it.each([
+    {
+      source: `[Object](uid:01900000-0000-7000-8000-000000000001?why=Read%20this&fallback=source)`,
+      copied: `${ref}?why=Read%20this&fallback=source`,
+    },
+    {
+      source: `[Object](${ref}){rel="review" why="Read this" fallback="source"}`,
+      copied: `${ref}?rel=review&why=Read+this&fallback=source`,
+    },
+    {
+      source: "[External](https://example.com/docs?topic=menus#copy)",
+      copied: "https://example.com/docs?topic=menus#copy",
+    },
+  ])("roundtrips Copy Link through the real context menu: $source", async ({ source, copied }) => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    useRightPanelStore.setState({ byThreadKey: {}, userActionRevisionByThreadKey: {} });
+    const showContextMenu = vi.fn().mockResolvedValue("copy-link");
+    const openExternal = vi.fn().mockResolvedValue(true);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("window", { desktopBridge: { showContextMenu, openExternal } });
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(async () => {
+        renderer = create(<ChatMarkdown cwd={undefined} threadRef={threadRef} text={source} />);
+      });
+      const link = renderer!.root.findByType("a");
+      const browserHref = link.props.href;
+      expect(browserHref).toMatch(/^https:\/\//);
+      await act(async () => {
+        link.props.onContextMenu({
+          clientX: 12,
+          clientY: 24,
+          preventDefault: vi.fn(),
+          stopPropagation: vi.fn(),
+        });
+      });
+      expect(showContextMenu).toHaveBeenCalledWith(
+        expect.arrayContaining([{ id: "copy-link", label: "Copy Link" }]),
+        { x: 12, y: 24 },
+      );
+      expect(writeText).toHaveBeenCalledExactlyOnceWith(copied);
+      expect(openExternal).not.toHaveBeenCalled();
+
+      showContextMenu.mockResolvedValue("open-external");
+      await act(async () => {
+        link.props.onContextMenu({
+          clientX: 12,
+          clientY: 24,
+          preventDefault: vi.fn(),
+          stopPropagation: vi.fn(),
+        });
+      });
+      expect(openExternal).toHaveBeenCalledExactlyOnceWith(browserHref);
+      expect(writeText).toHaveBeenCalledOnce();
+
+      await act(async () => {
+        renderer!.update(
+          <ChatMarkdown cwd={undefined} threadRef={threadRef} text={`[Pasted](${copied})`} />,
+        );
+      });
+      const event = { button: 0, preventDefault: vi.fn(), stopPropagation: vi.fn() };
+      await act(async () => renderer!.root.findByType("a").props.onClick(event));
+      if (copied.startsWith("atrium:")) {
+        expect(event.preventDefault).toHaveBeenCalledOnce();
+        expect(
+          selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, threadRef),
+        ).toMatchObject({ kind: "atrium", reference: copied });
+      } else {
+        expect(renderer!.root.findByType("a").props.href).toBe(copied);
+        expect(event.preventDefault).not.toHaveBeenCalled();
+        expect(
+          selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, threadRef),
+        ).toBeNull();
+      }
+    } finally {
+      await act(async () => renderer?.unmount());
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("opens an unmodified Atrium click in the scoped native panel with authored context", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    useRightPanelStore.setState({ byThreadKey: {}, userActionRevisionByThreadKey: {} });
+    let renderer: ReactTestRenderer | undefined;
+    const text = `[**Object**](${ref}){rel="review" why="Read" fallback="source"}`;
+    try {
+      await act(async () => {
+        renderer = create(<ChatMarkdown cwd="/tmp/project" threadRef={threadRef} text={text} />);
+      });
+      const link = renderer!.root.findByType("a");
+      expect(link.props.href).toMatch(/^https:\/\//);
+      expect(link.props["data-markdown-copy"]).toBe(text);
+      const event = {
+        button: 0,
+        defaultPrevented: false,
+        metaKey: false,
+        ctrlKey: false,
+        altKey: false,
+        shiftKey: false,
+        preventDefault: vi.fn(),
+        stopPropagation: vi.fn(),
+      };
+      await act(async () => {
+        link.props.onClick(event);
+      });
+      expect(event.preventDefault).toHaveBeenCalledOnce();
+      expect(
+        selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, threadRef),
+      ).toMatchObject({
+        kind: "atrium",
+        reference: `${ref}?rel=review&why=Read&fallback=source`,
+        title: "Object",
+      });
+      const state = useRightPanelStore.getState();
+      for (const modifier of [
+        { ctrlKey: true },
+        { metaKey: true },
+        { shiftKey: true },
+        { altKey: true },
+        { button: 1 },
+        { defaultPrevented: true },
+      ]) {
+        const modified = { ...event, ...modifier, preventDefault: vi.fn() };
+        link.props.onClick(modified);
+        expect(modified.preventDefault).not.toHaveBeenCalled();
+        expect(useRightPanelStore.getState()).toBe(state);
+      }
+    } finally {
+      await act(async () => renderer?.unmount());
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps canonical-note files and media outside project workspace authority", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    useRightPanelStore.setState({ byThreadKey: {} });
+    assetReads.mockClear();
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(async () => {
+        renderer = create(
+          <ChatMarkdown
+            cwd={undefined}
+            threadRef={threadRef}
+            workspaceLinks={false}
+            text={`[Source](/tmp/object.md)\n\n\u0060/tmp/object.md\u0060\n\n![Image](/tmp/image.png)\n\n- [ ] Read only\n\n[Nested](${ref})`}
+          />,
+        );
+      });
+      expect(renderer!.root.findAllByProps({ "data-markdown-file-link": "" })).toHaveLength(0);
+      expect(renderer!.root.findAllByType("img")).toHaveLength(0);
+      expect(assetReads).not.toHaveBeenCalled();
+      expect(renderer!.root.findByType("input").props.disabled).toBe(true);
+      const source = renderer!.root
+        .findAllByType("a")
+        .find((link) => link.props.href === "/tmp/object.md");
+      expect(source).toBeUndefined();
+      const nested = renderer!.root
+        .findAllByType("a")
+        .find((link) => link.props["data-atrium-reference"] === ref)!;
+      await act(async () =>
+        nested.props.onClick({ button: 0, preventDefault: vi.fn(), stopPropagation: vi.fn() }),
+      );
+      expect(
+        selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, threadRef)?.kind,
+      ).toBe("atrium");
+    } finally {
+      await act(async () => renderer?.unmount());
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([false, true])(
+    "keeps allowed external links active without workspace authority, parseRawHtml=%s",
+    async (parseRawHtml) => {
+      vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+      useRightPanelStore.setState({ byThreadKey: {}, userActionRevisionByThreadKey: {} });
+      assetReads.mockClear();
+      let renderer: ReactTestRenderer | undefined;
+      const external = [
+        "https://example.com/docs",
+        "http://example.com/docs",
+        "mailto:reader@example.com",
+        "//example.com/path",
+        "#section",
+      ];
+      const local = [
+        "file:///tmp/object.md",
+        "./object.md",
+        "../object.md",
+        "notes/object.md",
+        "/tmp/object.md",
+        "/srv/atrium/",
+        "C:/notes/object.md",
+        "notes",
+      ];
+      const rejected = ["javascript:alert%281%29", "data:text/html,hello", "custom://example.com"];
+      const text = [...external, ...local, ...rejected]
+        .map((href, index) => `[Link ${index}](${href})`)
+        .join("\n\n");
+      try {
+        await act(async () => {
+          renderer = create(
+            <ChatMarkdown
+              cwd="/tmp/project"
+              threadRef={threadRef}
+              workspaceLinks={false}
+              parseRawHtml={parseRawHtml}
+              text={`${text}\n\n\u0060/tmp/object.md\u0060\n\n![Local](/tmp/image.png)`}
+            />,
+          );
+        });
+        expect(
+          renderer!.root
+            .findAllByType("a")
+            .filter((link) => link.props.href)
+            .map((link) => link.props.href),
+        ).toEqual(external);
+        expect(renderer!.root.findAllByProps({ "data-markdown-file-link": "" })).toHaveLength(0);
+        expect(assetReads).not.toHaveBeenCalled();
+        const mail = renderer!.root
+          .findAllByType("a")
+          .find((link) => link.props.href === "mailto:reader@example.com")!;
+        const event = { button: 0, preventDefault: vi.fn(), stopPropagation: vi.fn() };
+        await act(async () => mail.props.onClick(event));
+        expect(event.preventDefault).not.toHaveBeenCalled();
+        expect(
+          selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, threadRef),
+        ).toBeNull();
+      } finally {
+        await act(async () => renderer?.unmount());
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
   it.each(['fallback="url:https://example.com"', 'why="www.example.com and person@example.com"'])(
     "consumes context without creating GFM autolinks: %s",
     (attributes) =>
