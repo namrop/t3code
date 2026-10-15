@@ -10,6 +10,17 @@ describe("buildRuntimeInstructions", () => {
     expect(instructions).toContain("call list_thread_pull_requests and link any PR");
   });
 
+  it("teaches agents to cite Atrium content as native atrium:// links", () => {
+    const instructions = buildRuntimeInstructions({ harness: "Codex" });
+    expect(instructions).toContain("<atrium_references>");
+    expect(instructions).toContain("atrium://uid/<uid>");
+    expect(instructions).toContain(
+      "[Settlement handoff](atrium://uid/01a12977-cb80-74b1-8c16-2a9e0eba8d83)",
+    );
+    expect(instructions).toContain("never invent a UID");
+    expect(instructions).toContain("not linkified");
+  });
+
   it("keeps known model and effort metadata on one line", () => {
     expect(
       buildRuntimeInstructions({
