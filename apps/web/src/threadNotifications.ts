@@ -1,6 +1,7 @@
 import type { ClientSettings } from "@t3tools/contracts/settings";
 
 import completionUrl from "./assets/notification-completion.mp3";
+import approvalUrl from "./assets/notification-approval.mp3";
 import inputUrl from "./assets/notification-input.mp3";
 
 type NotificationMode = ClientSettings["notificationMode"];
@@ -74,12 +75,12 @@ export function unlockNotificationAudio() {
 }
 
 export async function playNotificationSound(
-  kind: "completion" | "input",
+  kind: "completion" | "approval" | "input",
   shouldPlay: () => boolean,
 ) {
   if (!audioContext || audioContext.state !== "running") return;
   const context = audioContext;
-  const url = kind === "completion" ? completionUrl : inputUrl;
+  const url = kind === "completion" ? completionUrl : kind === "approval" ? approvalUrl : inputUrl;
   try {
     let buffer = buffers.get(url);
     if (!buffer) {

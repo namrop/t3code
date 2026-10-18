@@ -233,7 +233,10 @@ describe("thread notifications", () => {
     await render();
     expect(state.add).toHaveBeenCalledTimes(1);
     expect(state.add).toHaveBeenLastCalledWith(expect.objectContaining({ title }));
-    expect(state.sound).toHaveBeenCalledWith("input", expect.any(Function));
+    expect(state.sound).toHaveBeenCalledWith(
+      event === "approval" ? "approval" : "input",
+      expect.any(Function),
+    );
     expect(state.notification).not.toHaveBeenCalled();
 
     state[event] = false;

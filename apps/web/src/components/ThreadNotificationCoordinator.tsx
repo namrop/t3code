@@ -152,7 +152,7 @@ function EnvironmentNotifications({
                 ? "Thread failed"
                 : "Input needed";
       if (hasNotificationSound(mode)) {
-        void playNotificationSound(kind, () =>
+        void playNotificationSound(status === "approval" ? "approval" : kind, () =>
           hasNotificationSound(getClientSettings().notificationMode),
         );
       }
