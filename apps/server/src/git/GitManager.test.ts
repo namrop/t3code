@@ -917,6 +917,20 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         // @effect-diagnostics-next-line preferSchemaOverJson:off - native CLI fixture JSON.
         JSON.stringify({ scripts: { dev: "node scripts/dev-runner.ts dev" } }),
       );
+      NodeFS.mkdirSync(`${cwd}/scripts/lib`, { recursive: true });
+      NodeFS.writeFileSync(
+        `${cwd}/scripts/lib/owned-worktree-protocol.json`,
+        '{"schemaVersion":1,"profile":"pharos-t3-worktree-v1"}\n',
+      );
+      for (const file of [
+        "scripts/setup-worktree.ts",
+        "scripts/dev-runner.ts",
+        "scripts/dev-runner-runtime.ts",
+        "scripts/lib/owned-worktree.ts",
+      ])
+        NodeFS.writeFileSync(`${cwd}/${file}`, "// Fixture author declares owned hook support.\n");
+      yield* runGit(cwd, ["add", "package.json", "scripts"]);
+      yield* runGit(cwd, ["commit", "-m", "declare target owned hook capability"]);
       const remote = yield* createBareRemote();
       yield* runGit(cwd, ["remote", "add", "origin", remote]);
       yield* runGit(cwd, ["push", "-u", "origin", "main"]);

@@ -44,6 +44,22 @@ import * as ServerConfig from "../config.ts";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const isGitCommandError = Schema.is(GitCommandError);
+const ownedProtocolPath = "scripts/lib/owned-worktree-protocol.json";
+const ownedProtocolFiles = [
+  ownedProtocolPath,
+  "scripts/setup-worktree.ts",
+  "scripts/dev-runner.ts",
+  "scripts/dev-runner-runtime.ts",
+  "scripts/lib/owned-worktree.ts",
+];
+const decodeOwnedProtocol = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      schemaVersion: Schema.Literal(1),
+      profile: Schema.Literal("pharos-t3-worktree-v1"),
+    }),
+  ),
+);
 const OwnedWorktreeBinding = Schema.Struct({
   schemaVersion: Schema.Literal(1),
   manifest: Schema.String,
@@ -3388,12 +3404,46 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             }),
         ),
       );
+    let ownedRef: string | undefined;
     if (
       eligible &&
       commonDir !== null &&
       (yield* canonicalOwnedPath(commonDir.trim())) ===
         (yield* canonicalOwnedPath(ownedWorktrees.sourceCommonDir))
     ) {
+      // The allocating cwd's command hints do not establish target hook support.
+      // A source author's declaration enrolls this resolved tree, not arbitrary refs.
+      const commit = (yield* runGitStdout("GitVcsDriver.ownedWorktree.resolveRef", input.cwd, [
+        "rev-parse",
+        "--verify",
+        "--end-of-options",
+        `${input.refName}^{commit}`,
+      ])).trim();
+      const tree = yield* runGitStdout("GitVcsDriver.ownedWorktree.protocolTree", input.cwd, [
+        "ls-tree",
+        "-r",
+        "-z",
+        commit,
+        "--",
+        ...ownedProtocolFiles,
+      ]);
+      const files = new Set(
+        tree
+          .split("\0")
+          .filter((entry) => /^100(?:644|755) blob [0-9a-f]+\t/.test(entry))
+          .map((entry) => entry.slice(entry.indexOf("\t") + 1)),
+      );
+      if (ownedProtocolFiles.every((file) => files.has(file))) {
+        const declaration = yield* runGitStdout("GitVcsDriver.ownedWorktree.protocol", input.cwd, [
+          "show",
+          `${commit}:${ownedProtocolPath}`,
+        ]);
+        // Only unsupported declarations are legacy; Git/I/O errors above propagate.
+        const protocol = yield* decodeOwnedProtocol(declaration).pipe(Effect.result);
+        if (Result.isSuccess(protocol)) ownedRef = commit;
+      }
+    }
+    if (ownedRef !== undefined && ownedWorktrees !== undefined) {
       const output = yield* runOwned(
         input.cwd,
         [
@@ -3413,7 +3463,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           "--repo",
           input.cwd,
           "--ref",
-          input.refName,
+          ownedRef,
           "--checkout-workers",
           checkoutWorkers,
           ...(input.newRefName ? ["--new-branch", input.newRefName] : []),
@@ -3463,6 +3513,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         !path.isAbsolute(binding.cachePayload) ||
         binding.sourceRepo !== expectedSource ||
         binding.sourceCommonDir !== expectedCommon ||
+        binding.sourceCommit !== ownedRef ||
         !/^[0-9a-f]{40,64}$/.test(binding.sourceCommit)
       ) {
         return yield* new GitCommandError({

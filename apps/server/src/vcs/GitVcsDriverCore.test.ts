@@ -100,6 +100,24 @@ const writeTextFile = (
     yield* fileSystem.writeFileString(filePath, contents);
   });
 
+const commitOwnedCapability = (cwd: string) =>
+  Effect.gen(function* () {
+    yield* writeTextFile(
+      cwd,
+      "scripts/lib/owned-worktree-protocol.json",
+      '{"schemaVersion":1,"profile":"pharos-t3-worktree-v1"}\n',
+    );
+    for (const file of [
+      "scripts/setup-worktree.ts",
+      "scripts/dev-runner.ts",
+      "scripts/dev-runner-runtime.ts",
+      "scripts/lib/owned-worktree.ts",
+    ])
+      yield* writeTextFile(cwd, file, "// Fixture author declares owned hook support.\n");
+    yield* git(cwd, ["add", "scripts"]);
+    yield* git(cwd, ["commit", "-m", "declare owned hook capability"]);
+  });
+
 const makeReviewDiffFileContentsInput = (
   cwd: string,
   overrides: Partial<Omit<ReviewDiffFileContentsInput, "cwd">> = {},
@@ -2542,6 +2560,9 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
           "vendor/local",
         ]);
         yield* git(cwd, ["commit", "-am", "local submodule"]);
+        const oldTarget = yield* git(cwd, ["rev-parse", "HEAD"]);
+        yield* commitOwnedCapability(cwd);
+        const capableTarget = yield* git(cwd, ["rev-parse", "HEAD"]);
         // The actual filesystem containing this disposable fixture, not a fabricated mount.
         // @effect-diagnostics-next-line preferSchemaOverJson:off - native CLI fixture JSON.
         const mount = JSON.parse(
@@ -2599,6 +2620,32 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
           setupCommand: "node scripts/setup-worktree.ts",
           devCommand: "node scripts/dev-runner.ts dev",
         };
+        // TARGET-REF-COMPAT-R1 (owner 141125c3): supported cwd/hints do not
+        // confer hook support on an older committed target with no declaration.
+        const oldCheckout = yield* driver.createWorktree(
+          { cwd, path: null, refName: oldTarget, newRefName: "legacy-old-target" },
+          { ownedEnrollment: enrollment, submodules: "none" },
+        );
+        assert.isTrue(oldCheckout.worktree.path.startsWith(`${root}/legacy/`));
+        assert.isFalse(
+          NodeFS.existsSync(`${oldCheckout.worktree.path}/.pharos-owned-worktree.json`),
+        );
+        assert.equal(yield* git(oldCheckout.worktree.path, ["rev-parse", "HEAD"]), oldTarget);
+        assert.equal(NodeFS.readdirSync(`${root}/work`).length, 0);
+        assert.equal(NodeFS.readdirSync(`${root}/cache`).length, 0);
+        assert.equal(NodeFS.readdirSync(`${root}/records`).length, 0);
+        const invalidRef = yield* driver
+          .createWorktree(
+            { cwd, path: null, refName: "missing-target-ref", newRefName: "invalid-target" },
+            { ownedEnrollment: enrollment, submodules: "none" },
+          )
+          .pipe(Effect.result);
+        assert.isTrue(Result.isFailure(invalidRef));
+        if (Result.isFailure(invalidRef))
+          assert.equal(invalidRef.failure.operation, "GitVcsDriver.ownedWorktree.resolveRef");
+        assert.equal(NodeFS.readdirSync(`${root}/work`).length, 0);
+        assert.equal(NodeFS.readdirSync(`${root}/cache`).length, 0);
+        assert.notInclude(yield* git(cwd, ["worktree", "list", "--porcelain"]), "invalid-target");
         let claimed = "";
         const created = yield* driver.createWorktree(
           { cwd, path: null, refName: initialBranch, newRefName: "native-owned" },
@@ -2631,6 +2678,7 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         );
         assert.equal(NodeFS.readFileSync(`${target}/vendor/local/README.md`, "utf8"), "# test\n");
         assert.equal(yield* git(target, ["rev-parse", "HEAD"]), binding.sourceCommit);
+        assert.equal(binding.sourceCommit, capableTarget);
         const invocations = NodeFS.readdirSync(`${binding.retained}/invocations`);
         assert.equal(invocations.length, 1);
         // @effect-diagnostics-next-line preferSchemaOverJson:off - native CLI fixture JSON.
@@ -2666,12 +2714,37 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         // Neither legacy cases nor subsequent consumers allocate extra generations.
         assert.equal(NodeFS.readdirSync(`${root}/work`).length, 1);
         assert.equal(NodeFS.readdirSync(`${root}/cache`).length, 1);
+        for (const [name, contents] of [
+          ["unknown", '{"schemaVersion":1,"profile":"future-v2"}'],
+          ["unknown-schema", '{"schemaVersion":2,"profile":"pharos-t3-worktree-v1"}'],
+          ["malformed", "not json"],
+          ["partial", '{"schemaVersion":1,"profile":"pharos-t3-worktree-v1"}'],
+          ["missing", ""],
+        ] as const) {
+          yield* writeTextFile(cwd, "scripts/lib/owned-worktree-protocol.json", contents);
+          if (name === "partial") yield* git(cwd, ["rm", "scripts/lib/owned-worktree.ts"]);
+          if (name === "missing") {
+            yield* writeTextFile(cwd, "scripts/lib/owned-worktree.ts", "// Fixture hook.\n");
+            yield* git(cwd, ["rm", "-f", "scripts/lib/owned-worktree-protocol.json"]);
+          }
+          yield* git(cwd, ["add", "scripts"]);
+          yield* git(cwd, ["commit", "-m", `unsupported ${name} capability`]);
+          const result = yield* driver.createWorktree(
+            { cwd, path: null, refName: initialBranch, newRefName: `legacy-cap-${name}` },
+            { ownedEnrollment: enrollment, submodules: "none" },
+          );
+          assert.isTrue(result.worktree.path.startsWith(`${root}/legacy/`));
+          assert.isFalse(NodeFS.existsSync(`${result.worktree.path}/.pharos-owned-worktree.json`));
+          assert.equal(NodeFS.readdirSync(`${root}/work`).length, 1);
+          assert.equal(NodeFS.readdirSync(`${root}/cache`).length, 1);
+        }
       }),
     );
     it.effect("rejects producer success with a foreign binding instead of accepting its path", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
         const { initialBranch } = yield* initRepoWithCommit(cwd);
+        yield* commitOwnedCapability(cwd);
         const root = yield* makeTmpDir("invalid-owned-");
         const producer = `${root}/producer`;
         NodeFS.writeFileSync(
@@ -2718,6 +2791,7 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         Effect.gen(function* () {
           const cwd = yield* makeTmpDir();
           const { initialBranch } = yield* initRepoWithCommit(cwd);
+          yield* commitOwnedCapability(cwd);
           const root = yield* makeTmpDir("owned-root-");
           const producer = `${root}/producer`;
           NodeFS.writeFileSync(
