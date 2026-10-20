@@ -260,6 +260,7 @@ test.skipIf(!process.env.PHAROS_TEST_PRODUCER)(
     fs.mkdirSync(path.join(worktree, "scripts/lib"), { recursive: true });
     for (const file of [
       "dev-runner.ts",
+      "dev-runner-runtime.ts",
       "lib/owned-worktree.ts",
       "lib/public-config.ts",
       "lib/dev-share.ts",

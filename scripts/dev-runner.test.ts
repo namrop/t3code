@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - builds real worktree layouts on disk.
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeFS from "node:fs";
+import * as NodeChildProcess from "node:child_process";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NetService from "@t3tools/shared/Net";
@@ -15,10 +16,12 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
+import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
+import * as DevRunner from "./dev-runner.ts";
 import {
   checkPortAvailabilityOnHosts,
   createDevRunnerEnv,
@@ -32,6 +35,9 @@ import {
 } from "./dev-runner.ts";
 
 const emptyConfigLayer = ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }));
+const fixtureJson = Schema.fromJsonString(Schema.Unknown);
+const encodeFixtureJson = Schema.encodeSync(fixtureJson);
+const decodeFixtureJson = Schema.decodeUnknownSync(fixtureJson);
 const netServiceLayer = Layer.succeed(NetService.NetService, {
   canListenOnHost: () => Effect.succeed(true),
   isPortAvailableOnLoopback: () => Effect.succeed(true),
@@ -74,6 +80,125 @@ const devServerInput = {
 } as const;
 
 it.layer(NodeServices.layer)("dev-runner", (it) => {
+  it.effect("preserves every legacy export as the same runtime value", () =>
+    Effect.promise(async () => {
+      const { runDevRunnerMain: _main, ...runtime } = await import("./dev-runner-runtime.ts");
+      assert.deepStrictEqual(Object.keys(DevRunner).sort(), Object.keys(runtime).sort());
+      for (const name of Object.keys(runtime) as Array<keyof typeof runtime>) {
+        assert.strictEqual(DevRunner[name], runtime[name]);
+      }
+    }),
+  );
+
+  // Instrumented ordering diagnostic, not a substitute for native producer proof.
+  it.effect.each(["blocked", "missing"] as const)(
+    "bootstraps the actual owned entry before %s dependencies or repo env loading",
+    (dependencies) =>
+      Effect.sync(() => {
+        const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "dev-bootstrap-"));
+        try {
+          NodeFS.mkdirSync(NodePath.join(root, "scripts/lib"), { recursive: true });
+          for (const file of [
+            "dev-runner.ts",
+            "dev-runner-runtime.ts",
+            "lib/owned-worktree.ts",
+            "lib/public-config.ts",
+            "lib/dev-share.ts",
+          ]) {
+            const source = NodePath.join(import.meta.dirname, file);
+            if (NodeFS.existsSync(source))
+              NodeFS.copyFileSync(source, NodePath.join(root, "scripts", file));
+          }
+          NodeFS.writeFileSync(NodePath.join(root, "package.json"), '{"type":"module"}');
+          const binding = {
+            schemaVersion: 1,
+            manifest: NodePath.join(root, "manifest.json"),
+            homeId: "work",
+            runId: "bootstrap-job",
+            cacheHomeId: "cache",
+            cacheRunId: "bootstrap-cache",
+            owner: "fixture",
+            payload: root,
+            retained: root,
+            worktreePath: root,
+            physicalWorktreePath: root,
+            publishedRoot: root,
+            physicalRoot: root,
+            cachePayload: NodePath.join(root, "cache"),
+            producerCommand: NodePath.join(root, "producer"),
+            bindingPath: NodePath.join(root, "binding.json"),
+            sourceRepo: root,
+            sourceCommit: "fixture",
+            sourceCommonDir: NodePath.join(root, ".git"),
+          };
+          NodeFS.writeFileSync(binding.bindingPath, encodeFixtureJson(binding));
+          NodeFS.writeFileSync(
+            NodePath.join(root, ".pharos-owned-worktree.json"),
+            encodeFixtureJson(binding),
+          );
+          const preload = NodePath.join(root, "order.mjs");
+          NodeFS.writeFileSync(
+            preload,
+            `import { registerHooks, isBuiltin } from 'node:module';
+process.execve = (command, args) => { console.log(JSON.stringify({command, args})); process.exit(73); };
+registerHooks({ resolve(specifier, context, next) {
+  if (specifier.endsWith('/public-config.ts') || (${encodeFixtureJson(dependencies)} === 'blocked' && !isBuiltin(specifier) && !specifier.startsWith('.') && !specifier.startsWith('/') && !specifier.startsWith('file:')))
+    throw new Error('DEPENDENCY_RESOLUTION_BEFORE_OWNED_EXECVE:' + specifier);
+  return next(specifier, context);
+} });`,
+          );
+          const entry = NodePath.join(root, "scripts/dev-runner.ts");
+          const result = NodeChildProcess.spawnSync(
+            process.execPath,
+            ["--import", preload, entry, "dev", "--help"],
+            {
+              cwd: root,
+              env: {
+                ...process.env,
+                PHAROS_WORKTREE_CONSUMER: binding.runId,
+                PHAROS_WORKTREE_LEASE_FD: undefined,
+                PHAROS_CACHE_LEASE_FD: undefined,
+              },
+              encoding: "utf8",
+              timeout: 10000,
+            },
+          );
+          assert.equal(result.status, 73, result.stdout + result.stderr);
+          assert.deepStrictEqual(decodeFixtureJson(result.stdout), {
+            command: binding.producerCommand,
+            args: [
+              binding.producerCommand,
+              "--manifest",
+              binding.manifest,
+              "--home",
+              binding.homeId,
+              "use-worktree",
+              "--binding",
+              binding.bindingPath,
+              "--cwd",
+              root,
+              "--",
+              process.execPath,
+              entry,
+              "dev",
+              "--help",
+            ],
+          });
+          NodeFS.writeFileSync(NodePath.join(root, ".pharos-owned-worktree.json"), "{}");
+          const invalid = NodeChildProcess.spawnSync(
+            process.execPath,
+            ["--import", preload, entry, "dev", "--help"],
+            { cwd: root, encoding: "utf8", timeout: 10000 },
+          );
+          assert.equal(invalid.status, 1);
+          assert.include(invalid.stderr, "Invalid owned worktree marker or retained binding");
+          assert.notInclude(invalid.stderr, "DEPENDENCY_RESOLUTION_BEFORE_OWNED_EXECVE");
+        } finally {
+          NodeFS.rmSync(root, { recursive: true, force: true });
+        }
+      }),
+  );
+
   it.effect("accepts a dry run without the optional browser flag", () =>
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
