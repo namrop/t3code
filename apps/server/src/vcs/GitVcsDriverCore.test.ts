@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - realpathSync.native resolves Windows 8.3 short names, which the Effect realPath does not.
 import * as NodeFS from "node:fs";
-import { execFileSync } from "node:child_process";
+import * as NodeChildProcess from "node:child_process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { assert, it, describe } from "@effect/vitest";
@@ -2545,7 +2545,7 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         // The actual filesystem containing this disposable fixture, not a fabricated mount.
         // @effect-diagnostics-next-line preferSchemaOverJson:off - native CLI fixture JSON.
         const mount = JSON.parse(
-          execFileSync(
+          NodeChildProcess.execFileSync(
             "findmnt",
             ["--json", "--target", root, "--output", "TARGET,SOURCE,FSTYPE,FSROOT"],
             { encoding: "utf8" },
@@ -2570,9 +2570,9 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
           },
         });
         const manifest = `${root}/manifest.json`;
-        // @effect-diagnostics-next-line preferSchemaOverJson:off - native CLI fixture JSON.
         NodeFS.writeFileSync(
           manifest,
+          // @effect-diagnostics-next-line preferSchemaOverJson:off - native CLI fixture JSON.
           JSON.stringify({ schemaVersion: 1, homes: { work: home("work"), cache: home("cache") } }),
         );
         const config = yield* Effect.service(ServerConfig.ServerConfig).pipe(
@@ -2624,8 +2624,8 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         assert.equal(binding.sourceCommonDir, `${cwd}/.git`);
         assert.equal(binding.physicalRoot, ownedWorktrees.physicalRoot);
         assert.equal(binding.publishedRoot, ownedWorktrees.publishedRoot);
-        // @effect-diagnostics-next-line preferSchemaOverJson:off - native CLI fixture JSON.
         assert.deepStrictEqual(
+          // @effect-diagnostics-next-line preferSchemaOverJson:off - native CLI fixture JSON.
           JSON.parse(NodeFS.readFileSync(binding.bindingPath, "utf8")),
           binding,
         );
@@ -2674,9 +2674,9 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         const { initialBranch } = yield* initRepoWithCommit(cwd);
         const root = yield* makeTmpDir("invalid-owned-");
         const producer = `${root}/producer`;
-        // @effect-diagnostics-next-line preferSchemaOverJson:off - native CLI fixture JSON.
         NodeFS.writeFileSync(
           producer,
+          // @effect-diagnostics-next-line preferSchemaOverJson:off - native CLI fixture JSON.
           `#!/bin/sh\nprintf '%s\\n' '${JSON.stringify({ worktreePath: cwd, binding: { manifest: `${root}/manifest`, homeId: "work", bindingPath: `${root}/binding`, sourceCommonDir: "/foreign" } })}'\n`,
           { mode: 0o755 },
         );

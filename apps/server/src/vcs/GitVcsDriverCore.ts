@@ -43,6 +43,7 @@ import {
 import * as ServerConfig from "../config.ts";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+const isGitCommandError = Schema.is(GitCommandError);
 const OwnedWorktreeBinding = Schema.Struct({
   schemaVersion: Schema.Literal(1),
   manifest: Schema.String,
@@ -902,7 +903,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     }).pipe(
       Effect.scoped,
       Effect.mapError((cause) =>
-        Schema.is(GitCommandError)(cause)
+        isGitCommandError(cause)
           ? cause
           : new GitCommandError({
               operation: "GitVcsDriver.ownedWorktree",
