@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// @effect-diagnostics nodeBuiltinImport:off - owned entry bootstrap precedes the Effect runtime.
 
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";

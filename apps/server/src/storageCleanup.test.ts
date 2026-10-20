@@ -14,6 +14,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as ServerConfig from "./config.ts";
 import * as GitManager from "./git/GitManager.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
@@ -126,6 +127,7 @@ describe("native storage cleanup service ownership exclusion", () => {
     "skips %s owned candidates before Git mutation while cleaning adjacent legacy worktrees",
     (kind) =>
       Effect.gen(function* () {
+        yield* TestClock.setTime(NOW_MS);
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const root = yield* fs.makeTempDirectoryScoped({ prefix: "cleanup-owned-" });

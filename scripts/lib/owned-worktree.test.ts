@@ -1,5 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off
-// @effect-diagnostics globalDate:off globalTimers:off - native process fixture deadlines outside Effect.
+// @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off - native process fixture deadlines outside Effect.
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -378,6 +377,7 @@ test.skipIf(!process.env.PHAROS_TEST_PRODUCER)(
           leaf: leafInfo,
           fdPaths,
           inheritedFiles: fdPaths.map((fd) => fs.readlinkSync(fd)),
+          holdsBothAfterSupervisorLoss: false,
           stopped: false,
           returncode: null as number | null,
           signal: null as string | null,
@@ -389,11 +389,12 @@ test.skipIf(!process.env.PHAROS_TEST_PRODUCER)(
           await waitFor(() => wrapper.signalCode === "SIGKILL", "supervisor exit");
           expect(live(runner)).toBe(true);
           expect(fdPaths.every((fd) => fs.statSync(fd).isFile())).toBe(true);
+          receipt.holdsBothAfterSupervisorLoss = true;
           signalGroup(runner, "SIGTERM");
         } else if (mode === "SIGINT" || mode === "SIGTERM") wrapper.kill(mode);
         else fs.writeFileSync(proof + ".stop", "stop");
         await waitFor(
-          () => !live(runner) && !live(leafPid),
+          () => !live(runner) && !live(leafPid) && !live(vpInfo.pid) && !live(shellPid),
           `${mode}: direct runner and detached Effect leaf must stop`,
         );
         if (mode !== "supervisor-loss")
