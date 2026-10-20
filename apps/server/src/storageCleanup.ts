@@ -211,6 +211,20 @@ export const make = Effect.gen(function* () {
       const settings = resolveWorktreeCleanup(serverSettings, thread.projectId);
       if (!worktreeCleanupEnabled(settings)) continue;
       const worktreePath = path.resolve(thread.worktreePath!);
+      // External lifecycle ownership outranks native cleanup, even when a
+      // custom legacy root encloses the physical/published home. A marker also
+      // preserves that boundary after configuration changes (valid or stale).
+      if (
+        (config.ownedWorktrees !== undefined &&
+          [config.ownedWorktrees.physicalRoot, config.ownedWorktrees.publishedRoot].some(
+            (ownedRoot) => {
+              const owned = path.resolve(ownedRoot);
+              return owned === worktreePath || inside(owned, worktreePath);
+            },
+          )) ||
+        (yield* fs.exists(path.join(worktreePath, ".pharos-owned-worktree.json")))
+      )
+        continue;
       const deleted = "workspaceRoot" in thread;
       const project = deleted
         ? { workspaceRoot: thread.workspaceRoot }
