@@ -43,6 +43,37 @@ import {
 import * as ServerConfig from "../config.ts";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+const OwnedWorktreeBinding = Schema.Struct({
+  schemaVersion: Schema.Literal(1),
+  manifest: Schema.String,
+  homeId: Schema.String,
+  runId: Schema.String,
+  cacheHomeId: Schema.String,
+  cacheRunId: Schema.String,
+  owner: Schema.String,
+  payload: Schema.String,
+  retained: Schema.String,
+  worktreePath: Schema.String,
+  physicalWorktreePath: Schema.String,
+  publishedRoot: Schema.String,
+  physicalRoot: Schema.String,
+  cachePayload: Schema.String,
+  producerCommand: Schema.String,
+  bindingPath: Schema.String,
+  sourceRepo: Schema.String,
+  sourceCommit: Schema.String,
+  sourceCommonDir: Schema.String,
+});
+const decodeOwnedWorktreeResult = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      worktreePath: Schema.String,
+      runId: Schema.String,
+      cacheRunId: Schema.String,
+      binding: OwnedWorktreeBinding,
+    }),
+  ),
+);
 const gitProcesses = Semaphore.makeUnsafe(8);
 // `git worktree add` checks out the full tree, so on large repositories it can
 // take well beyond the default 30s (e.g. a 375k-file repo takes ~40s on an idle
@@ -3393,18 +3424,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             }
           : undefined,
       );
-      const result = yield* Schema.decodeUnknownEffect(
-        Schema.fromJsonString(
-          Schema.Struct({
-            worktreePath: Schema.String,
-            binding: Schema.Struct({
-              manifest: Schema.String,
-              homeId: Schema.String,
-              bindingPath: Schema.String,
-            }),
-          }),
-        ),
-      )(output).pipe(
+      const result = yield* decodeOwnedWorktreeResult(output).pipe(
         Effect.mapError(
           (cause) =>
             new GitCommandError({
@@ -3417,6 +3437,41 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             }),
         ),
       );
+      const binding = result.binding;
+      const expectedPath = path.join(ownedWorktrees.publishedRoot, result.runId, "src", repoName);
+      const expectedPayload = path.join(ownedWorktrees.physicalRoot, result.runId);
+      const expectedSource = yield* canonicalOwnedPath(input.cwd);
+      const expectedCommon = yield* canonicalOwnedPath(ownedWorktrees.sourceCommonDir);
+      if (
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(result.runId) ||
+        result.worktreePath !== expectedPath ||
+        binding.worktreePath !== expectedPath ||
+        binding.runId !== result.runId ||
+        binding.cacheRunId !== result.cacheRunId ||
+        binding.manifest !== ownedWorktrees.manifest ||
+        binding.homeId !== ownedWorktrees.homeId ||
+        binding.cacheHomeId !== ownedWorktrees.cacheHomeId ||
+        binding.owner !== ownedWorktrees.owner ||
+        binding.producerCommand !== ownedWorktrees.producerCommand ||
+        binding.publishedRoot !== ownedWorktrees.publishedRoot ||
+        binding.physicalRoot !== ownedWorktrees.physicalRoot ||
+        binding.payload !== expectedPayload ||
+        binding.physicalWorktreePath !== path.join(expectedPayload, "src", repoName) ||
+        binding.bindingPath !== path.join(binding.retained, "worktree-binding.json") ||
+        !path.isAbsolute(binding.retained) ||
+        !path.isAbsolute(binding.cachePayload) ||
+        binding.sourceRepo !== expectedSource ||
+        binding.sourceCommonDir !== expectedCommon ||
+        !/^[0-9a-f]{40,64}$/.test(binding.sourceCommit)
+      ) {
+        return yield* new GitCommandError({
+          operation: "GitVcsDriver.ownedWorktree",
+          cwd: input.cwd,
+          command: ownedWorktrees.producerCommand,
+          detail:
+            "Owned worktree producer binding does not match the nominated source and roots; no fallback was attempted.",
+        });
+      }
       worktreePath = result.worktreePath;
       ownedBinding = result.binding;
     } else

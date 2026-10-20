@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - realpathSync.native resolves Windows 8.3 short names, which the Effect realPath does not.
 import * as NodeFS from "node:fs";
+import { execFileSync } from "node:child_process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { assert, it, describe } from "@effect/vitest";
@@ -2521,6 +2522,196 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
   });
 
   describe("worktree operations", () => {
+    it.effect("packaged Python allocates a native owned checkout and consumes submodules", () =>
+      Effect.gen(function* () {
+        const producer = process.env.PHAROS_TEST_PRODUCER;
+        if (!producer) return;
+        const root = yield* makeTmpDir("owned-native-");
+        const cwd = `${root}/source`;
+        const sub = `${root}/sub`;
+        NodeFS.mkdirSync(cwd);
+        NodeFS.mkdirSync(sub);
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        yield* initRepoWithCommit(sub);
+        yield* git(cwd, [
+          "-c",
+          "protocol.file.allow=always",
+          "submodule",
+          "add",
+          sub,
+          "vendor/local",
+        ]);
+        yield* git(cwd, ["commit", "-am", "local submodule"]);
+        // The actual filesystem containing this disposable fixture, not a fabricated mount.
+        // @effect-diagnostics-next-line preferSchemaOverJson:off - native CLI fixture JSON.
+        const mount = JSON.parse(
+          execFileSync(
+            "findmnt",
+            ["--json", "--target", root, "--output", "TARGET,SOURCE,FSTYPE,FSROOT"],
+            { encoding: "utf8" },
+          ),
+        ).filesystems[0];
+        for (const name of ["work", "cache", "records", "retained", "legacy"])
+          NodeFS.mkdirSync(`${root}/${name}`);
+        const home = (name: string) => ({
+          path: `${root}/${name}`,
+          backing: {
+            mountPoint: mount.target,
+            device: mount.source.split("[")[0],
+            fsType: mount.fstype,
+            fsRoot: mount.fsroot,
+          },
+          lifecycle: {
+            ownerRelease: {
+              owner: "fixture",
+              recordRoot: `${root}/records`,
+              retainedRoot: `${root}/retained`,
+            },
+          },
+        });
+        const manifest = `${root}/manifest.json`;
+        // @effect-diagnostics-next-line preferSchemaOverJson:off - native CLI fixture JSON.
+        NodeFS.writeFileSync(
+          manifest,
+          JSON.stringify({ schemaVersion: 1, homes: { work: home("work"), cache: home("cache") } }),
+        );
+        const config = yield* Effect.service(ServerConfig.ServerConfig).pipe(
+          Effect.provide(ServerConfigLayer),
+        );
+        const ownedWorktrees = {
+          publishedRoot: `${root}/work`,
+          physicalRoot: `${root}/work`,
+          producerCommand: producer,
+          manifest,
+          homeId: "work",
+          cacheHomeId: "cache",
+          owner: "fixture",
+          sourceCommonDir: `${cwd}/.git`,
+        };
+        const driver = yield* makeGitVcsDriverCore().pipe(
+          Effect.provideService(ServerConfig.ServerConfig, {
+            ...config,
+            worktreesDir: `${root}/legacy`,
+            ownedWorktrees,
+          }),
+        );
+        const enrollment = {
+          setupCommand: "node scripts/setup-worktree.ts",
+          devCommand: "node scripts/dev-runner.ts dev",
+        };
+        let claimed = "";
+        const created = yield* driver.createWorktree(
+          { cwd, path: null, refName: initialBranch, newRefName: "native-owned" },
+          {
+            ownedEnrollment: enrollment,
+            submodules: "recursive",
+            progress: {
+              onWorktreeClaimed: (value) =>
+                Effect.sync(() => {
+                  claimed = value;
+                }),
+            },
+          },
+        );
+        const target = created.worktree.path;
+        assert.equal(claimed, target);
+        assert.isTrue(target.startsWith(`${root}/work/`));
+        // @effect-diagnostics-next-line preferSchemaOverJson:off - native CLI fixture JSON.
+        const binding = JSON.parse(
+          NodeFS.readFileSync(`${target}/.pharos-owned-worktree.json`, "utf8"),
+        );
+        assert.equal(Object.keys(binding).length, 19);
+        assert.equal(binding.sourceCommonDir, `${cwd}/.git`);
+        assert.equal(binding.physicalRoot, ownedWorktrees.physicalRoot);
+        assert.equal(binding.publishedRoot, ownedWorktrees.publishedRoot);
+        // @effect-diagnostics-next-line preferSchemaOverJson:off - native CLI fixture JSON.
+        assert.deepStrictEqual(
+          JSON.parse(NodeFS.readFileSync(binding.bindingPath, "utf8")),
+          binding,
+        );
+        assert.equal(NodeFS.readFileSync(`${target}/vendor/local/README.md`, "utf8"), "# test\n");
+        assert.equal(yield* git(target, ["rev-parse", "HEAD"]), binding.sourceCommit);
+        const invocations = NodeFS.readdirSync(`${binding.retained}/invocations`);
+        assert.equal(invocations.length, 1);
+        // @effect-diagnostics-next-line preferSchemaOverJson:off - native CLI fixture JSON.
+        const invocation = JSON.parse(
+          NodeFS.readFileSync(
+            `${binding.retained}/invocations/${invocations[0]}/request.json`,
+            "utf8",
+          ),
+        );
+        assert.deepStrictEqual(invocation.argv, [
+          "git",
+          "submodule",
+          "update",
+          "--init",
+          "--recursive",
+        ]);
+        const foreign = `${root}/foreign`;
+        NodeFS.mkdirSync(foreign);
+        const foreignBranch = (yield* initRepoWithCommit(foreign)).initialBranch;
+        for (const [name, repo, ref, options, explicit] of [
+          ["explicit", cwd, initialBranch, enrollment, `${root}/explicit`],
+          ["missing", cwd, initialBranch, undefined, null],
+          ["custom", cwd, initialBranch, { ...enrollment, setupCommand: "custom" }, null],
+          ["foreign", foreign, foreignBranch, enrollment, null],
+        ] as const) {
+          const result = yield* driver.createWorktree(
+            { cwd: repo, path: explicit, refName: ref, newRefName: `legacy-${name}` },
+            { ownedEnrollment: options ?? null, submodules: "none" },
+          );
+          assert.isFalse(NodeFS.existsSync(`${result.worktree.path}/.pharos-owned-worktree.json`));
+          assert.isFalse(result.worktree.path.startsWith(`${root}/work/`));
+        }
+        // Neither legacy cases nor subsequent consumers allocate extra generations.
+        assert.equal(NodeFS.readdirSync(`${root}/work`).length, 1);
+        assert.equal(NodeFS.readdirSync(`${root}/cache`).length, 1);
+      }),
+    );
+    it.effect("rejects producer success with a foreign binding instead of accepting its path", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const root = yield* makeTmpDir("invalid-owned-");
+        const producer = `${root}/producer`;
+        // @effect-diagnostics-next-line preferSchemaOverJson:off - native CLI fixture JSON.
+        NodeFS.writeFileSync(
+          producer,
+          `#!/bin/sh\nprintf '%s\\n' '${JSON.stringify({ worktreePath: cwd, binding: { manifest: `${root}/manifest`, homeId: "work", bindingPath: `${root}/binding`, sourceCommonDir: "/foreign" } })}'\n`,
+          { mode: 0o755 },
+        );
+        const config = yield* Effect.service(ServerConfig.ServerConfig).pipe(
+          Effect.provide(ServerConfigLayer),
+        );
+        const driver = yield* makeGitVcsDriverCore().pipe(
+          Effect.provideService(ServerConfig.ServerConfig, {
+            ...config,
+            ownedWorktrees: {
+              publishedRoot: root,
+              physicalRoot: root,
+              producerCommand: producer,
+              manifest: `${root}/manifest`,
+              homeId: "work",
+              cacheHomeId: "cache",
+              owner: "fixture",
+              sourceCommonDir: `${cwd}/.git`,
+            },
+          }),
+        );
+        const result = yield* driver
+          .createWorktree(
+            { cwd, path: null, refName: initialBranch, newRefName: "bad-binding" },
+            {
+              ownedEnrollment: {
+                setupCommand: "node scripts/setup-worktree.ts",
+                devCommand: "pnpm dev",
+              },
+            },
+          )
+          .pipe(Effect.result);
+        assert.isTrue(Result.isFailure(result));
+      }),
+    );
     it.effect(
       "eligible owned allocation refuses native producer failure without legacy fallback",
       () =>
