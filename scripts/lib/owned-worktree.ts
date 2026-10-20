@@ -1,6 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off - used before dependency installation.
-import * as fs from "node:fs";
-import * as path from "node:path";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+
+const fs = NodeFS;
+const path = NodePath;
 
 export interface OwnedWorktreeBinding {
   schemaVersion: 1;
@@ -133,4 +136,23 @@ export function ownedInstallArgs(binding: OwnedWorktreeBinding, root: string) {
     path.join(root, "node_modules/.pnpm"),
     "--manage-package-manager-versions",
   ];
+}
+
+/** Replace, rather than nest, the launcher with the native lifecycle supervisor.
+ * Its direct Node child holds both leases for the full Effect runner lifetime.
+ * Effect's additionalFds makes pipes, not inherited arbitrary descriptors; Vite
+ * descendants are therefore supervised by that runner, not claimed as holders.
+ */
+export function reexecOwnedDev(root: string, argv: readonly string[]): void {
+  const binding = readOwnedWorktree(root);
+  if (!binding || hasOwnedConsumers(binding, process.env)) return;
+  if (!process.execve)
+    throw new Error("Owned dev requires Node execve; refusing an unleased dev runner");
+  const command = ownedCommand(binding, root, argv);
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined,
+    ),
+  );
+  process.execve(command.command, [command.command, ...command.args], env);
 }

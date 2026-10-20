@@ -1,15 +1,21 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
-import { afterEach, expect, test } from "vitest";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import * as NodeChildProcess from "node:child_process";
+import { afterEach, expect, test } from "vite-plus/test";
+
+const fs = NodeFS;
+const os = NodeOS;
+const path = NodePath;
+const childProcess = NodeChildProcess;
 
 const dirs: string[] = [];
 const fixture = () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "owned-worktree-"));
   dirs.push(root);
   const binding = {
-    schemaVersion: 1,
+    schemaVersion: 1 as const,
     manifest: path.join(root, "manifest.json"),
     homeId: "work",
     runId: "job",
@@ -109,4 +115,61 @@ test("owned install is pinned to the manifest and explicit shared/local stores",
   ]);
   fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ packageManager: "npm@1" }));
   expect(() => helper.ownedInstallArgs(binding, root)).toThrow(/pnpm/);
+});
+
+test("setup routes install and native warm through two-consumer prefixes without changing env links", () => {
+  const { root, binding } = fixture();
+  fs.mkdirSync(path.join(root, "scripts/lib"), { recursive: true });
+  for (const file of ["setup-worktree.ts", "lib/owned-worktree.ts"])
+    fs.copyFileSync(path.join(import.meta.dirname, "..", file), path.join(root, "scripts", file));
+  fs.writeFileSync(
+    path.join(root, "package.json"),
+    JSON.stringify({ type: "module", packageManager: "pnpm@11.10.0" }),
+  );
+  fs.writeFileSync(path.join(root, ".pharos-owned-worktree.json"), JSON.stringify(binding));
+  const log = path.join(root, "calls.jsonl");
+  fs.writeFileSync(
+    binding.producerCommand,
+    `#!${process.execPath}\nimport * as fs from 'node:fs'; fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2))+'\\n');\n`,
+    { mode: 0o755 },
+  );
+  fs.writeFileSync(path.join(root, "vp"), "#!/bin/sh\nexit 91\n", { mode: 0o755 });
+  const project = path.join(root, "main");
+  fs.mkdirSync(project);
+  fs.writeFileSync(path.join(project, ".env"), "FIXTURE=not-printed");
+  const result = childProcess.spawnSync(
+    process.execPath,
+    [path.join(root, "scripts/setup-worktree.ts")],
+    {
+      env: { ...process.env, PATH: `${root}:${process.env.PATH}`, T3CODE_PROJECT_ROOT: project },
+      encoding: "utf8",
+    },
+  );
+  expect(result.status, result.stderr).toBe(0);
+  const calls = fs
+    .readFileSync(log, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  expect(calls).toHaveLength(2);
+  expect(calls[0]).toContain("--frozen-lockfile");
+  expect(calls[0]).toContain(path.join(binding.cachePayload, "pnpm"));
+  expect(calls[1]).toContain(path.join(root, "apps/web/scripts/warm-dep-cache.ts"));
+  expect(fs.readlinkSync(path.join(root, ".env"))).toBe(path.join(project, ".env"));
+  expect(result.stdout).not.toContain("not-printed");
+});
+
+test("dev execs the native lifetime supervisor and preserves its nonzero exit", async () => {
+  const helper = await load();
+  expect(typeof helper.reexecOwnedDev).toBe("function");
+  const { root, binding } = fixture();
+  fs.writeFileSync(path.join(root, ".pharos-owned-worktree.json"), JSON.stringify(binding));
+  fs.writeFileSync(binding.producerCommand, "#!/bin/sh\nexit 17\n", { mode: 0o755 });
+  const script = path.join(root, "exec.mjs");
+  fs.writeFileSync(
+    script,
+    `import { reexecOwnedDev } from ${JSON.stringify(path.join(import.meta.dirname, "owned-worktree.ts"))}; reexecOwnedDev(${JSON.stringify(root)}, ['node','dev-runner.ts','dev']); process.exit(99);`,
+  );
+  const result = childProcess.spawnSync(process.execPath, [script], { encoding: "utf8" });
+  expect(result.status, result.stderr).toBe(17);
 });

@@ -9,6 +9,7 @@
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
+import { ownedCommand, ownedInstallArgs, readOwnedWorktree } from "./lib/owned-worktree.ts";
 
 const ENV_FILES = [".env", NodePath.join("infra", "relay", ".env")];
 
@@ -17,13 +18,22 @@ if (!projectRoot) {
   throw new Error("T3CODE_PROJECT_ROOT is not set. Run this through the t3.json setup action.");
 }
 const worktree = NodePath.dirname(import.meta.dirname);
+const binding = readOwnedWorktree(worktree);
 
 // `shell` resolves `vp` through PATH, including Windows command shims.
-const install = NodeChildProcess.spawnSync("vp i", {
-  cwd: worktree,
-  shell: true,
-  stdio: "inherit",
-});
+const installCommand = binding
+  ? ownedCommand(binding, worktree, ownedInstallArgs(binding, worktree))
+  : null;
+const install = installCommand
+  ? NodeChildProcess.spawnSync(installCommand.command, installCommand.args, {
+      cwd: worktree,
+      stdio: "inherit",
+    })
+  : NodeChildProcess.spawnSync("vp i", {
+      cwd: worktree,
+      shell: true,
+      stdio: "inherit",
+    });
 if (install.status !== 0) process.exit(install.status ?? 1);
 
 // Env files live as real files in the main checkout; worktrees only get
@@ -44,9 +54,15 @@ for (const file of ENV_FILES) {
   NodeFS.symlinkSync(source, target);
 }
 
-const warm = NodeChildProcess.spawnSync(
+const warmArgs = [
   process.execPath,
-  [NodePath.join(worktree, "apps", "web", "scripts", "warm-dep-cache.ts")],
-  { cwd: worktree, stdio: "inherit" },
-);
+  NodePath.join(worktree, "apps", "web", "scripts", "warm-dep-cache.ts"),
+];
+const warmCommand = binding
+  ? ownedCommand(binding, worktree, warmArgs)
+  : { command: warmArgs[0]!, args: warmArgs.slice(1) };
+const warm = NodeChildProcess.spawnSync(warmCommand.command, warmCommand.args, {
+  cwd: worktree,
+  stdio: "inherit",
+});
 process.exit(warm.status ?? 1);

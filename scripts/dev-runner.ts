@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -21,6 +22,7 @@ import { ChildProcess } from "effect/process";
 
 import { type DevShareError, shareDevServer, unshareDevServer } from "./lib/dev-share.ts";
 import { loadRepoEnv } from "./lib/public-config.ts";
+import { reexecOwnedDev } from "./lib/owned-worktree.ts";
 
 Object.assign(process.env, loadRepoEnv());
 
@@ -913,6 +915,10 @@ const cliRuntimeLayer = Layer.mergeAll(
 );
 
 if (import.meta.main) {
+  reexecOwnedDev(NodePath.dirname(import.meta.dirname), [
+    process.execPath,
+    ...process.argv.slice(1),
+  ]);
   Command.run(devRunnerCli, { version: "0.0.0" }).pipe(
     Effect.scoped,
     Effect.provide(cliRuntimeLayer),

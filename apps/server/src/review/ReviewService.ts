@@ -67,13 +67,20 @@ export const make = Effect.gen(function* () {
     operation: "ReviewService.getDiffPreview" | "ReviewService.getDiffFileContents",
     cwd: string,
   ) {
-    const [candidate, workspaceRoot, worktreesRoot] = yield* Effect.all([
+    const [candidate, workspaceRoot, worktreesRoot, ...ownedRoots] = yield* Effect.all([
       canonicalizePath(cwd),
       canonicalizePath(config.cwd),
       canonicalizePath(config.worktreesDir),
+      ...(config.ownedWorktrees
+        ? [config.ownedWorktrees.publishedRoot, config.ownedWorktrees.physicalRoot].map(
+            canonicalizePath,
+          )
+        : []),
     ]);
 
-    if (isWithinRoot(candidate, workspaceRoot) || isWithinRoot(candidate, worktreesRoot)) {
+    if (
+      [workspaceRoot!, worktreesRoot!, ...ownedRoots].some((root) => isWithinRoot(candidate!, root))
+    ) {
       return;
     }
 

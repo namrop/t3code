@@ -13,6 +13,7 @@ import * as ReviewService from "./ReviewService.ts";
 function makeLayer(input: {
   readonly workspaceRoot: string;
   readonly baseDir: string;
+  readonly ownedWorktrees?: ServerConfig.OwnedWorktreesConfig;
   readonly detectCalls?: Array<{ readonly cwd: string }>;
 }) {
   return ReviewService.layer.pipe(
@@ -28,12 +29,49 @@ function makeLayer(input: {
       }),
     ),
     Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
-    Layer.provide(ServerConfig.layerTest(input.workspaceRoot, input.baseDir)),
+    Layer.provide(
+      Layer.effect(
+        ServerConfig.ServerConfig,
+        Effect.map(ServerConfig.ServerConfig, (config) => ({
+          ...config,
+          ...(input.ownedWorktrees ? { ownedWorktrees: input.ownedWorktrees } : {}),
+        })),
+      ).pipe(Layer.provide(ServerConfig.layerTest(input.workspaceRoot, input.baseDir))),
+    ),
     Layer.provideMerge(NodeServices.layer),
   );
 }
 
 describe("ReviewService", () => {
+  it.effect("accepts only configured physical and published owned roots", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const ownedWorktrees = {
+        publishedRoot: `${root}/published`,
+        physicalRoot: `${root}/physical`,
+        producerCommand: "/bin/producer",
+        manifest: "/manifest",
+        homeId: "work",
+        cacheHomeId: "cache",
+        owner: "owner",
+        sourceCommonDir: "/repo/.git",
+      };
+      yield* Effect.gen(function* () {
+        const review = yield* ReviewService.ReviewService;
+        for (const cwd of [`${root}/published/job/src/t3code`, `${root}/physical/job/src/t3code`])
+          yield* review.getDiffPreview({ cwd });
+        const error = yield* review
+          .getDiffPreview({ cwd: `${root}/physical-other/job` })
+          .pipe(Effect.flip);
+        assert.equal(error._tag, "VcsRepositoryDetectionError");
+      }).pipe(
+        Effect.provide(
+          makeLayer({ workspaceRoot: `${root}/repo`, baseDir: `${root}/state`, ownedWorktrees }),
+        ),
+      );
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
   it.effect("rejects diff preview cwd outside the configured workspace roots", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

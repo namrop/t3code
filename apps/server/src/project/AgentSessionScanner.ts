@@ -627,6 +627,14 @@ export const make = Effect.gen(function* () {
   const projectStore = yield* ProjectStore.ProjectStoreV2;
   const baseDir = path.resolve(serverConfig.baseDir);
   const worktreesDir = path.resolve(serverConfig.worktreesDir);
+  const managedWorktreeRoots = [
+    worktreesDir,
+    ...(serverConfig.ownedWorktrees
+      ? [serverConfig.ownedWorktrees.publishedRoot, serverConfig.ownedWorktrees.physicalRoot].map(
+          (root) => path.resolve(root),
+        )
+      : []),
+  ];
   // Windows filesystems are case-insensitive, so path prefix checks there
   // must case fold.
   const foldWorktreeCase = (yield* HostProcessPlatform) === "win32";
@@ -656,7 +664,7 @@ export const make = Effect.gen(function* () {
     normalizeForWorktreeMatch(candidatePath, foldWorktreeCase).startsWith(
       normalizeForWorktreeMatch(baseDir, foldWorktreeCase),
     ) ||
-    isT3ManagedWorktree(candidatePath, worktreesDir, foldWorktreeCase);
+    managedWorktreeRoots.some((root) => isT3ManagedWorktree(candidatePath, root, foldWorktreeCase));
 
   const listDirectory = (directory: string) =>
     fileSystem.readDirectory(directory).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));

@@ -871,7 +871,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     }).pipe(
       Effect.scoped,
       Effect.mapError((cause) =>
-        cause instanceof GitCommandError
+        Schema.is(GitCommandError)(cause)
           ? cause
           : new GitCommandError({
               operation: "GitVcsDriver.ownedWorktree",

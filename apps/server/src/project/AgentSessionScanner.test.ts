@@ -51,6 +51,7 @@ interface ScannerTestInput {
   readonly importedWorkspaceRoots?: ReadonlyArray<string>;
   /** Base dir for the test ServerConfig; worktreesDir derives from it. */
   readonly configBaseDir?: string;
+  readonly ownedWorktrees?: ServerConfig.OwnedWorktreesConfig;
   readonly providerInstances?: ContractServerSettings["providerInstances"];
 }
 
@@ -67,9 +68,19 @@ const makeScannerTestLayer = (input: ScannerTestInput) =>
             ? {}
             : { providerInstances: input.providerInstances }),
         }),
-        ServerConfig.layerTest(
-          input.claudeHomePath,
-          input.configBaseDir ?? { prefix: "t3code-scanner-config-" },
+        Layer.effect(
+          ServerConfig.ServerConfig,
+          Effect.map(ServerConfig.ServerConfig, (config) => ({
+            ...config,
+            ...(input.ownedWorktrees ? { ownedWorktrees: input.ownedWorktrees } : {}),
+          })),
+        ).pipe(
+          Layer.provide(
+            ServerConfig.layerTest(
+              input.claudeHomePath,
+              input.configBaseDir ?? { prefix: "t3code-scanner-config-" },
+            ),
+          ),
         ),
         makeProjectStoreLayer(input.importedWorkspaceRoots ?? []),
       ),
@@ -949,6 +960,41 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
       }),
     );
 
+    it.effect("excludes both configured owned roots without excluding neighboring projects", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const claudeHomePath = yield* makeTempDir("owned-claude-");
+        const codexHomePath = yield* makeTempDir("owned-codex-");
+        const root = yield* makeTempDir("owned-roots-");
+        const fs = yield* FileSystem.FileSystem;
+        const ownedWorktrees = {
+          publishedRoot: `${root}/published`,
+          physicalRoot: `${root}/physical`,
+          producerCommand: "/producer",
+          manifest: "/manifest",
+          homeId: "work",
+          cacheHomeId: "cache",
+          owner: "owner",
+          sourceCommonDir: "/repo/.git",
+        };
+        for (const [index, cwd] of [
+          `${root}/published/job/src/repo`,
+          `${root}/physical/job/src/repo`,
+          `${root}/physical-neighbor/repo`,
+        ].entries()) {
+          yield* fs.makeDirectory(cwd, { recursive: true });
+          yield* writeTranscript({
+            filePath: path.join(claudeHomePath, "projects", `p${index}`, "a.jsonl"),
+            contents: claudeSessionLine(cwd),
+            mtimeMs: Date.parse("2026-01-01T00:00:00.000Z"),
+          });
+        }
+        const result = yield* runScan({ claudeHomePath, codexHomePath, ownedWorktrees });
+        expect(result.candidates.map((entry) => entry.path)).toEqual([
+          `${root}/physical-neighbor/repo`,
+        ]);
+      }),
+    );
     it.effect("excludes sandboxes under the configured worktrees dir without .t3 in the path", () =>
       Effect.gen(function* () {
         const path = yield* Path.Path;
