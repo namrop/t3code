@@ -28,6 +28,7 @@ import type {
 import {
   DEFAULT_SERVER_SETTINGS,
   EventId,
+  EnvironmentId,
   GitCommandError,
   ProjectId,
   ProviderDriverKind,
@@ -58,8 +59,19 @@ import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.t
 import * as ProviderRegistry from "../provider/Services/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as GitManager from "./GitManager.ts";
+import * as GitWorkflow from "./GitWorkflowService.ts";
+import * as WorktreeMcp from "../mcp/WorktreeMcpService.ts";
+import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
+import * as ProjectService from "../project/ProjectService.ts";
+import * as VcsStatusBroadcaster from "../vcs/VcsStatusBroadcaster.ts";
+import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+import { resolveProjectScripts, setupProjectScript } from "@t3tools/shared/projectScripts";
+import { resolveOwnedEnrollment } from "../vcs/ownedWorktrees.ts";
 
 const encodeCliJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const decodeCallerPackageJson = Schema.decodeEffect(
+  Schema.fromJsonString(Schema.Struct({ scripts: Schema.Struct({ dev: Schema.String }) })),
+);
 const decodeForgejoPullRequest = Schema.decodeEffect(ForgejoPullRequestSchema);
 
 interface FakeGhScenario {
@@ -664,6 +676,7 @@ function preparePullRequestThread(
 }
 
 function makeManager(input?: {
+  serverConfig?: Partial<ServerConfig.ServerConfig["Service"]>;
   ghScenario?: FakeGhScenario;
   sourceControlProvider?: SourceControlProvider["Service"];
   textGeneration?: Partial<FakeGitTextGeneration>;
@@ -679,9 +692,16 @@ function makeManager(input?: {
 }) {
   const { service: gitHubCli, ghCalls } = createGitHubCliWithFakeGh(input?.ghScenario);
   const textGeneration = createTextGeneration(input?.textGeneration);
-  const serverConfigLayer = ServerConfig.layerTest(process.cwd(), {
+  const baseServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
     prefix: "t3-git-manager-test-",
   });
+  const serverConfigLayer = Layer.effect(
+    ServerConfig.ServerConfig,
+    Effect.service(ServerConfig.ServerConfig).pipe(
+      Effect.provide(baseServerConfigLayer),
+      Effect.map((config) => ({ ...config, ...input?.serverConfig })),
+    ),
+  );
 
   const serverSettingsLayer = ServerSettings.ServerSettingsService.layerTest(input?.serverSettings);
 
@@ -704,7 +724,7 @@ function makeManager(input?: {
         Layer.provideMerge(NodeServices.layer),
         Layer.provideMerge(serverConfigLayer),
       )
-    : GitVcsDriver.layer.pipe(
+    : (input?.serverConfig ? Layer.fresh(GitVcsDriver.layer) : GitVcsDriver.layer).pipe(
         Layer.provideMerge(VcsProcess.layer),
         Layer.provideMerge(NodeServices.layer),
         Layer.provideMerge(serverConfigLayer),
@@ -752,11 +772,17 @@ function makeManager(input?: {
     if (input?.seed !== undefined) {
       yield* input.seed.pipe(Effect.provideContext(stores), Effect.orDie);
     }
-    const manager = yield* GitManager.make.pipe(
+    const services = yield* Effect.gen(function* () {
+      const settingsService = yield* ServerSettings.ServerSettingsService;
+      const git = yield* GitVcsDriver.GitVcsDriver;
+      const manager = yield* GitManager.make;
+      return { manager, settingsService, git };
+    }).pipe(
       Effect.provide(managerLayer),
       Effect.provideContext(stores),
+      Effect.provide(serverConfigLayer),
     );
-    return { manager, ghCalls };
+    return { ...services, ghCalls };
   });
 }
 
@@ -769,6 +795,380 @@ const GitManagerTestLayer = GitVcsDriver.layer.pipe(
 );
 
 it.layer(GitManagerTestLayer)("GitManager", (it) => {
+  it.effect("packaged Python resolves stored project setup for regular, MCP and PR callers", () =>
+    Effect.gen(function* () {
+      const producer = process.env.PHAROS_TEST_PRODUCER;
+      if (!producer) return;
+      const root = yield* makeTempDir("manager-owned-");
+      const cwd = `${root}/repo`;
+      NodeFS.mkdirSync(cwd);
+      yield* initRepo(cwd);
+      // @effect-diagnostics-next-line preferSchemaOverJson:off - native CLI fixture JSON.
+      const mount = JSON.parse(
+        NodeChildProcess.execFileSync(
+          "findmnt",
+          ["--json", "--target", root, "--output", "TARGET,SOURCE,FSTYPE,FSROOT"],
+          { encoding: "utf8" },
+        ),
+      ).filesystems[0];
+      for (const name of ["work", "cache", "records", "retained", "legacy"])
+        NodeFS.mkdirSync(`${root}/${name}`);
+      const home = (name: string) => ({
+        path: `${root}/${name}`,
+        backing: {
+          mountPoint: mount.target,
+          device: mount.source.split("[")[0],
+          fsType: mount.fstype,
+          fsRoot: mount.fsroot,
+        },
+        lifecycle: {
+          ownerRelease: {
+            owner: "fixture",
+            recordRoot: `${root}/records`,
+            retainedRoot: `${root}/retained`,
+          },
+        },
+      });
+      const manifest = `${root}/manifest.json`;
+      NodeFS.writeFileSync(
+        manifest,
+        // @effect-diagnostics-next-line preferSchemaOverJson:off - native CLI fixture JSON.
+        JSON.stringify({ schemaVersion: 1, homes: { work: home("work"), cache: home("cache") } }),
+      );
+      const serverConfig = {
+        worktreesDir: `${root}/legacy`,
+        ownedWorktrees: {
+          publishedRoot: `${root}/work`,
+          physicalRoot: `${root}/work`,
+          producerCommand: producer,
+          manifest,
+          homeId: "work",
+          cacheHomeId: "cache",
+          owner: "fixture",
+          sourceCommonDir: `${cwd}/.git`,
+        },
+      };
+      const projectId = ProjectId.make("owned-callers");
+      const threadId = ThreadId.make("owned-callers");
+      const setup = {
+        id: "setup",
+        name: "Setup",
+        command: "node scripts/setup-worktree.ts",
+        icon: "configure" as const,
+        runOnWorktreeCreate: true,
+      };
+      const seed = Effect.gen(function* () {
+        yield* (yield* ProjectStore.ProjectStoreV2).apply({
+          sequence: 1,
+          eventId: EventId.make("owned-project"),
+          aggregateKind: "project",
+          aggregateId: projectId,
+          occurredAt: "2026-10-20T00:00:00.000Z",
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "project.created",
+          payload: {
+            projectId,
+            title: "Owned",
+            workspaceRoot: cwd,
+            defaultModelSelection: null,
+            scripts: [setup],
+            createdAt: "2026-10-20T00:00:00.000Z",
+            updatedAt: "2026-10-20T00:00:00.000Z",
+          },
+        });
+        const at = DateTime.makeUnsafe("2026-10-20T00:00:00.000Z");
+        const providerInstanceId = ProviderInstanceId.make("fixture");
+        yield* (yield* ProjectionStore.ProjectionStoreV2).apply({
+          id: EventId.make("owned-thread"),
+          type: "thread.created",
+          threadId,
+          providerInstanceId,
+          occurredAt: at,
+          payload: {
+            createdBy: "user",
+            creationSource: "web",
+            id: threadId,
+            projectId,
+            title: "Owned",
+            providerInstanceId,
+            modelSelection: { instanceId: providerInstanceId, model: "unused" },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            activeProviderThreadId: null,
+            lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+            forkedFrom: null,
+            createdAt: at,
+            updatedAt: at,
+            archivedAt: null,
+            settledOverride: null,
+            settledAt: null,
+            lastVisitedAt: null,
+            deletedAt: null,
+          },
+        });
+      });
+      NodeFS.writeFileSync(
+        `${cwd}/package.json`,
+        // @effect-diagnostics-next-line preferSchemaOverJson:off - native CLI fixture JSON.
+        JSON.stringify({ scripts: { dev: "node scripts/dev-runner.ts dev" } }),
+      );
+      const remote = yield* createBareRemote();
+      yield* runGit(cwd, ["remote", "add", "origin", remote]);
+      yield* runGit(cwd, ["push", "-u", "origin", "main"]);
+      yield* runGit(cwd, ["branch", "feature/owned-pr"]);
+      yield* runGit(cwd, ["push", "origin", "feature/owned-pr", "HEAD:refs/pull/77/head"]);
+      const { manager, settingsService, git } = yield* makeManager({
+        serverConfig,
+        seed,
+        ghScenario: {
+          pullRequest: {
+            number: 77,
+            title: "Fixture",
+            url: "https://github.com/fixture/repo/pull/77",
+            baseRefName: "main",
+            headRefName: "feature/owned-pr",
+            state: "open",
+          },
+        },
+      });
+      const observed = yield* settingsService.getSettings;
+      const project = { id: projectId, scripts: [setup] };
+      expect(
+        setupProjectScript(resolveProjectScripts(observed, project))?.command,
+        "positive resolved setup",
+      ).toBe(setup.command);
+      expect(resolveOwnedEnrollment(observed, project, "node scripts/dev-runner.ts dev")).toEqual({
+        setupCommand: setup.command,
+        devCommand: "node scripts/dev-runner.ts dev",
+      });
+      const regular = yield* manager.createWorktree({
+        cwd,
+        path: null,
+        refName: "main",
+        newRefName: "regular-owned",
+      });
+      expect(regular.worktree.path, "regular stored-project allocation").toMatch(
+        new RegExp(`^${root}/work/`),
+      );
+      // Exercise the real MCP -> workflow -> manager path; only outer thread/UI boundaries are fixtures.
+      const workflowLayer = GitWorkflow.layer.pipe(
+        Layer.provide(Layer.succeed(GitManager.GitManager, manager)),
+        Layer.provideMerge(VcsDriverRegistry.layer),
+        Layer.provide(Layer.succeed(GitVcsDriver.GitVcsDriver, git)),
+        Layer.provide(NodeServices.layer),
+      );
+      let bound = "";
+      const mcpLayer = WorktreeMcp.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            workflowLayer,
+            Layer.mock(ThreadManagement.ThreadManagementService)({
+              getThreadRecords: () =>
+                Effect.succeed({
+                  thread: { projectId, worktreePath: null, archivedAt: null, deletedAt: null },
+                } as never),
+              dispatch: (input) =>
+                Effect.sync(() => {
+                  if (input.type === "thread.metadata.update") bound = input.worktreePath ?? "";
+                  return {} as never;
+                }),
+            }),
+            Layer.mock(ProjectService.ProjectService)({
+              getById: () =>
+                Effect.succeed(
+                  Option.some({ id: projectId, workspaceRoot: cwd, scripts: [setup] } as never),
+                ),
+            }),
+            Layer.succeed(ServerSettings.ServerSettingsService, settingsService),
+            Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({
+              runForThread: () => Effect.succeed({ status: "no-script" }),
+            }),
+            Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({
+              refreshStatus: (cwd) => manager.status({ cwd }),
+            }),
+          ),
+        ),
+        Layer.provide(NodeServices.layer),
+      );
+      const mcp = yield* Effect.service(WorktreeMcp.WorktreeMcpService).pipe(
+        Effect.provide(mcpLayer),
+      );
+      const handoff = yield* mcp.handoff(
+        {
+          environmentId: EnvironmentId.make("fixture"),
+          capabilities: new Set(["worktree"]),
+          issuedAt: 0,
+          requestNamespace: "fixture",
+          client: undefined,
+          thread: {
+            threadId,
+            providerInstanceId: ProviderInstanceId.make("fixture"),
+            providerSessionId: "fixture",
+          },
+        },
+        { branch: "mcp-owned", baseRef: "main", startFromOrigin: false, runSetupScript: false },
+      );
+      expect(handoff.worktreePath).toBe(bound);
+      expect(bound.startsWith(`${root}/work/`)).toBe(true);
+      const pr = yield* manager.preparePullRequestThread({
+        cwd,
+        reference: "77",
+        mode: "worktree",
+        threadId,
+      });
+      expect(pr.worktreePath?.startsWith(`${root}/work/`)).toBe(true);
+      for (const [name, settings, dev, expectedCommand] of [
+        [
+          "environment",
+          {
+            projectSettingsFolded: true,
+            defaultProjectScripts: [{ ...setup, command: "custom-environment" }],
+          },
+          "node scripts/dev-runner.ts dev",
+          "custom-environment",
+        ],
+        [
+          "project",
+          {
+            projectSettingsOverrides: {
+              [projectId]: { defaultProjectScripts: [{ ...setup, command: "custom-project" }] },
+            },
+          },
+          "node scripts/dev-runner.ts dev",
+          "custom-project",
+        ],
+        ["folded-empty", { projectSettingsFolded: true }, "node scripts/dev-runner.ts dev", null],
+        ["unsupported-dev", {}, "node other-runner.ts", setup.command],
+      ] as const) {
+        // @effect-diagnostics-next-line preferSchemaOverJson:off - native CLI fixture JSON.
+        NodeFS.writeFileSync(`${cwd}/package.json`, JSON.stringify({ scripts: { dev } }));
+        const other = yield* makeManager({ serverConfig, seed, serverSettings: settings });
+        expect(other.settingsService, `${name}: isolated settings service`).not.toBe(
+          settingsService,
+        );
+        const normalized = yield* other.settingsService.getSettings;
+        const actualDev = (yield* decodeCallerPackageJson(
+          NodeFS.readFileSync(`${cwd}/package.json`, "utf8"),
+        )).scripts.dev;
+        const resolved =
+          setupProjectScript(resolveProjectScripts(normalized, project))?.command ?? null;
+        yield* Effect.logInfo(
+          encodeCliJson({
+            row: name,
+            folded: normalized.projectSettingsFolded,
+            defaults: normalized.defaultProjectScripts,
+            overrides: normalized.projectSettingsOverrides,
+            legacy: normalized.projectScriptOverrides,
+            resolved,
+            dev: actualDev,
+            enrollment: resolveOwnedEnrollment(normalized, project, actualDev) ?? null,
+          }),
+        ).pipe(Effect.provideService(References.MinimumLogLevel, "Info"));
+        expect(actualDev, `${name}: actual cwd dev command`).toBe(dev);
+        expect(resolved, `${name}: normalized setup command before allocation`).toBe(
+          expectedCommand,
+        );
+        expect(
+          resolveOwnedEnrollment(normalized, project, actualDev),
+          `${name}: no enrollment before allocation`,
+        ).toBeUndefined();
+        if (name === "project")
+          expect(
+            normalized.projectSettingsOverrides[projectId]?.defaultProjectScripts?.[0]?.command,
+          ).toBe(expectedCommand);
+        if (name === "environment")
+          expect(normalized.defaultProjectScripts[0]?.command).toBe(expectedCommand);
+        const result = yield* other.manager.createWorktree({
+          cwd,
+          path: null,
+          refName: "main",
+          newRefName: `legacy-${name}`,
+        });
+        expect(
+          result.worktree.path.startsWith(`${root}/legacy/`),
+          `${name}: unenrolled allocation`,
+        ).toBe(true);
+        expect(
+          NodeFS.existsSync(`${result.worktree.path}/.pharos-owned-worktree.json`),
+          `${name}: no owned marker`,
+        ).toBe(false);
+      }
+      // Restore supported cwd scripts: these PRs must remain unenrolled solely for missing thread context.
+      NodeFS.writeFileSync(
+        `${cwd}/package.json`,
+        encodeCliJson({ scripts: { dev: "node scripts/dev-runner.ts dev" } }),
+      );
+      for (const [number, prThread] of [
+        [78, undefined],
+        [79, ThreadId.make("unresolved")],
+      ] as const) {
+        const branch = `feature/unenrolled-${number}`;
+        yield* runGit(cwd, ["branch", branch, "main"]);
+        yield* runGit(cwd, ["push", "origin", branch, `main:refs/pull/${number}/head`]);
+        const caller = yield* makeManager({
+          serverConfig,
+          seed,
+          ghScenario: {
+            pullRequest: {
+              number,
+              title: "Unenrolled fixture",
+              url: `https://github.com/fixture/repo/pull/${number}`,
+              baseRefName: "main",
+              headRefName: branch,
+              state: "open",
+            },
+          },
+        });
+        const result = yield* caller.manager.preparePullRequestThread({
+          cwd,
+          reference: String(number),
+          mode: "worktree",
+          ...(prThread ? { threadId: prThread } : {}),
+        });
+        expect(
+          result.worktreePath?.startsWith(`${root}/legacy/`),
+          `PR ${number}: no resolved thread enrollment`,
+        ).toBe(true);
+        expect(
+          NodeFS.existsSync(`${result.worktreePath}/.pharos-owned-worktree.json`),
+          `PR ${number}: no owned marker`,
+        ).toBe(false);
+      }
+      expect(NodeFS.readdirSync(`${root}/work`)).toHaveLength(3);
+      expect(NodeFS.readdirSync(`${root}/cache`)).toHaveLength(1);
+      expect(NodeFS.readdirSync(`${root}/legacy/repo`)).toHaveLength(6);
+      for (const checkout of [regular.worktree.path, bound, pr.worktreePath])
+        expect(
+          NodeFS.existsSync(`${checkout}/.pharos-owned-worktree.json`),
+          "positive caller retained owned binding",
+        ).toBe(true);
+      yield* Effect.logInfo(
+        encodeCliJson({
+          owned: 3,
+          cache: 1,
+          legacy: 6,
+          positiveCallers: [
+            "regular",
+            "MCP handoff -> GitWorkflow -> GitManager",
+            "resolved-thread PR",
+          ],
+          negativeCallers: [
+            "environment",
+            "project",
+            "folded-empty",
+            "unsupported-dev",
+            "no-thread PR",
+            "unresolved-thread PR",
+          ],
+        }),
+      ).pipe(Effect.provideService(References.MinimumLogLevel, "Info"));
+    }),
+  );
   it.effect("status includes draft PR metadata when branch already has a draft PR", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");
