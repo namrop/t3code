@@ -44,6 +44,49 @@ const makeDesktopBootstrap = (
 });
 
 it.layer(NodeServices.layer)("cli config resolution", (it) => {
+  it.effect("keeps owned worktree configuration separate from all legacy paths", () =>
+    Effect.gen(function* () {
+      const baseDir = `${NodeOS.tmpdir()}/t3-owned-config-test`;
+      const env = {
+        T3CODE_OWNED_WORKTREES_DIR: "/published/owned",
+        T3CODE_OWNED_WORKTREES_PHYSICAL_DIR: "/physical/owned",
+        T3CODE_OWNED_WORKTREE_PRODUCER: "/bin/producer",
+        T3CODE_OWNED_WORKTREE_MANIFEST: "/etc/manifest.json",
+        T3CODE_OWNED_WORKTREE_HOME: "work",
+        T3CODE_OWNED_CACHE_HOME: "cache",
+        T3CODE_OWNED_WORKTREE_OWNER: "owner",
+        T3CODE_OWNED_REPO_COMMON_DIR: "/srv/pharos/workspaces/t3code/.git",
+      };
+      const resolved = yield* resolveServerConfig(minimalWebFlags(baseDir), Option.none()).pipe(
+        Effect.provide(
+          Layer.mergeAll(ConfigProvider.layer(ConfigProvider.fromEnv({ env })), NetService.layer),
+        ),
+      );
+      expect(resolved.ownedWorktrees).toEqual({
+        publishedRoot: "/published/owned",
+        physicalRoot: "/physical/owned",
+        producerCommand: "/bin/producer",
+        manifest: "/etc/manifest.json",
+        homeId: "work",
+        cacheHomeId: "cache",
+        owner: "owner",
+        sourceCommonDir: "/srv/pharos/workspaces/t3code/.git",
+      });
+      expect(resolved.worktreesDir).toBe(`${baseDir}/worktrees`);
+      const error = yield* resolveServerConfig(minimalWebFlags(baseDir), Option.none()).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            ConfigProvider.layer(
+              ConfigProvider.fromEnv({ env: { T3CODE_OWNED_WORKTREES_DIR: "/published/owned" } }),
+            ),
+            NetService.layer,
+          ),
+        ),
+        Effect.flip,
+      );
+      expect(String(error)).toContain("owned worktree configuration");
+    }),
+  );
   it.effect("configures reply speech from its environment variables and stays off by default", () =>
     Effect.gen(function* () {
       const { join } = yield* Path.Path;

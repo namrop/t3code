@@ -2521,6 +2521,73 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
   });
 
   describe("worktree operations", () => {
+    it.effect(
+      "eligible owned allocation refuses native producer failure without legacy fallback",
+      () =>
+        Effect.gen(function* () {
+          const cwd = yield* makeTmpDir();
+          const { initialBranch } = yield* initRepoWithCommit(cwd);
+          const root = yield* makeTmpDir("owned-root-");
+          const producer = `${root}/producer`;
+          NodeFS.writeFileSync(
+            producer,
+            "#!/bin/sh\nprintf 'native producer refused\\n' >&2\nexit 23\n",
+            { mode: 0o755 },
+          );
+          const config = yield* Effect.service(ServerConfig.ServerConfig).pipe(
+            Effect.provide(ServerConfigLayer),
+          );
+          const driver = yield* makeGitVcsDriverCore().pipe(
+            Effect.provideService(ServerConfig.ServerConfig, {
+              ...config,
+              ownedWorktrees: {
+                publishedRoot: root,
+                physicalRoot: root,
+                producerCommand: producer,
+                manifest: `${root}/manifest`,
+                homeId: "work",
+                cacheHomeId: "cache",
+                owner: "owner",
+                sourceCommonDir: `${cwd}/.git`,
+              },
+            }),
+          );
+          const result = yield* driver
+            .createWorktree(
+              { cwd, path: null, refName: initialBranch, newRefName: "owned-failure" },
+              {
+                ownedEnrollment: {
+                  setupCommand: "node scripts/setup-worktree.ts",
+                  devCommand: "node scripts/dev-runner.ts dev",
+                },
+              },
+            )
+            .pipe(Effect.result);
+          assert.isTrue(Result.isFailure(result));
+          if (Result.isFailure(result)) assert.equal(result.failure.exitCode, 23);
+          assert.notInclude(yield* git(cwd, ["worktree", "list", "--porcelain"]), "owned-failure");
+        }),
+    );
+    it.effect("native forced removal refuses an external owned marker", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const target = `${yield* makeTmpDir()}/worktree`;
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        yield* driver.createWorktree({
+          cwd,
+          path: target,
+          refName: initialBranch,
+          newRefName: "retain-owned",
+        });
+        yield* writeTextFile(target, ".pharos-owned-worktree.json", "{}");
+        const result = yield* driver
+          .removeWorktree({ cwd, path: target, force: true })
+          .pipe(Effect.result);
+        assert.isTrue(Result.isFailure(result));
+        assert.isTrue(NodeFS.existsSync(target));
+      }),
+    );
     it.effect("uses parallel checkout without skipping filters or hooks", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();

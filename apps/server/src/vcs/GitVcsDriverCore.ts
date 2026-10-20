@@ -838,8 +838,50 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const { worktreesDir } = yield* ServerConfig.ServerConfig;
+  const { worktreesDir, ownedWorktrees } = yield* ServerConfig.ServerConfig;
   const crypto = yield* Crypto.Crypto;
+
+  const runOwned = (
+    cwd: string,
+    args: readonly string[],
+    onLine?: (line: string) => Effect.Effect<void, never>,
+  ) =>
+    Effect.gen(function* () {
+      const context = { operation: "GitVcsDriver.ownedWorktree", cwd, args: [...args] };
+      const child = yield* commandSpawner.spawn(
+        ChildProcess.make(ownedWorktrees!.producerCommand, args, { cwd, env: process.env }),
+      );
+      const [stdout, stderr, exitCode] = yield* Effect.all(
+        [
+          collectOutput(context, child.stdout, DEFAULT_MAX_OUTPUT_BYTES, false, undefined),
+          collectOutput(context, child.stderr, DEFAULT_MAX_OUTPUT_BYTES, false, onLine),
+          child.exitCode,
+        ],
+        { concurrency: "unbounded" },
+      );
+      if (exitCode !== 0)
+        return yield* new GitCommandError({
+          ...gitCommandContext(context),
+          exitCode,
+          detail: `Owned worktree producer refused: ${stderr.text || stdout.text}`,
+          stdoutLength: stdout.text.length,
+          stderrLength: stderr.text.length,
+        });
+      return stdout.text;
+    }).pipe(
+      Effect.scoped,
+      Effect.mapError((cause) =>
+        cause instanceof GitCommandError
+          ? cause
+          : new GitCommandError({
+              operation: "GitVcsDriver.ownedWorktree",
+              cwd,
+              command: ownedWorktrees!.producerCommand,
+              detail: "Owned worktree producer failed; no legacy fallback was attempted.",
+              cause,
+            }),
+      ),
+    );
 
   const executeRaw: GitVcsDriver.GitVcsDriver["Service"]["execute"] = Effect.fnUntraced(
     function* (input) {
@@ -3278,7 +3320,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const targetBranch = input.newRefName ?? input.refName;
     const sanitizedBranch = targetBranch.replace(/\//g, "-");
     const repoName = path.basename(input.cwd);
-    const worktreePath = input.path ?? path.join(worktreesDir, repoName, sanitizedBranch);
+    let worktreePath = input.path ?? path.join(worktreesDir, repoName, sanitizedBranch);
+    let ownedBinding: { manifest: string; homeId: string; bindingPath: string } | undefined;
     const args = input.newRefName
       ? ["worktree", "add", "-b", input.newRefName, worktreePath, input.refName]
       : ["worktree", "add", worktreePath, input.refName];
@@ -3286,28 +3329,119 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const onCheckoutProgress = progress?.onCheckoutProgress;
 
     const checkoutWorkers = (yield* readConfigValue(input.cwd, "checkout.workers")) ?? "0";
-    yield* executeGit(
-      "GitVcsDriver.createWorktree",
-      input.cwd,
-      ["-c", `checkout.workers=${checkoutWorkers}`, ...args],
-      {
-        fallbackErrorDetail: "git worktree add failed",
-        timeoutMs: WORKTREE_ADD_TIMEOUT_MS,
-        ...(onCheckoutProgress
-          ? {
-              // Git only prints checkout progress when stderr is a tty or the
-              // delay elapsed. GIT_PROGRESS_DELAY=0 forces it through the pipe.
-              env: { GIT_PROGRESS_DELAY: "0", LC_ALL: "C" },
-              progress: {
-                onStderrLine: (line) => {
-                  const parsed = parseGitCheckoutProgressLine(line);
-                  return parsed ? onCheckoutProgress(parsed) : Effect.void;
-                },
-              },
+    const enrollment = options?.ownedEnrollment;
+    const eligible =
+      ownedWorktrees !== undefined &&
+      input.path === null &&
+      enrollment?.setupCommand === "node scripts/setup-worktree.ts" &&
+      ["pnpm dev", "node scripts/dev-runner.ts dev"].includes(enrollment.devCommand);
+    const commonDir = eligible
+      ? yield* runGitStdout("GitVcsDriver.ownedWorktree.commonDir", input.cwd, [
+          "rev-parse",
+          "--path-format=absolute",
+          "--git-common-dir",
+        ])
+      : null;
+    const canonicalOwnedPath = (value: string) =>
+      fileSystem.realPath(value).pipe(
+        Effect.mapError(
+          (cause) =>
+            new GitCommandError({
+              operation: "GitVcsDriver.ownedWorktree",
+              cwd: input.cwd,
+              command: "realpath",
+              detail:
+                "Unable to resolve the configured owned repository; no fallback was attempted.",
+              cause,
+            }),
+        ),
+      );
+    if (
+      eligible &&
+      commonDir !== null &&
+      (yield* canonicalOwnedPath(commonDir.trim())) ===
+        (yield* canonicalOwnedPath(ownedWorktrees.sourceCommonDir))
+    ) {
+      const output = yield* runOwned(
+        input.cwd,
+        [
+          "--manifest",
+          ownedWorktrees.manifest,
+          "--home",
+          ownedWorktrees.homeId,
+          "create-worktree",
+          "--owner",
+          ownedWorktrees.owner,
+          "--cache-home",
+          ownedWorktrees.cacheHomeId,
+          "--published-root",
+          ownedWorktrees.publishedRoot,
+          "--producer-command",
+          ownedWorktrees.producerCommand,
+          "--repo",
+          input.cwd,
+          "--ref",
+          input.refName,
+          "--checkout-workers",
+          checkoutWorkers,
+          ...(input.newRefName ? ["--new-branch", input.newRefName] : []),
+        ],
+        onCheckoutProgress
+          ? (line) => {
+              const parsed = parseGitCheckoutProgressLine(line);
+              return parsed ? onCheckoutProgress(parsed) : Effect.void;
             }
-          : {}),
-      },
-    );
+          : undefined,
+      );
+      const result = yield* Schema.decodeUnknownEffect(
+        Schema.fromJsonString(
+          Schema.Struct({
+            worktreePath: Schema.String,
+            binding: Schema.Struct({
+              manifest: Schema.String,
+              homeId: Schema.String,
+              bindingPath: Schema.String,
+            }),
+          }),
+        ),
+      )(output).pipe(
+        Effect.mapError(
+          (cause) =>
+            new GitCommandError({
+              operation: "GitVcsDriver.ownedWorktree",
+              cwd: input.cwd,
+              command: ownedWorktrees.producerCommand,
+              detail:
+                "Invalid owned worktree producer success response; retained allocation was not removed.",
+              cause,
+            }),
+        ),
+      );
+      worktreePath = result.worktreePath;
+      ownedBinding = result.binding;
+    } else
+      yield* executeGit(
+        "GitVcsDriver.createWorktree",
+        input.cwd,
+        ["-c", `checkout.workers=${checkoutWorkers}`, ...args],
+        {
+          fallbackErrorDetail: "git worktree add failed",
+          timeoutMs: WORKTREE_ADD_TIMEOUT_MS,
+          ...(onCheckoutProgress
+            ? {
+                // Git only prints checkout progress when stderr is a tty or the
+                // delay elapsed. GIT_PROGRESS_DELAY=0 forces it through the pipe.
+                env: { GIT_PROGRESS_DELAY: "0", LC_ALL: "C" },
+                progress: {
+                  onStderrLine: (line) => {
+                    const parsed = parseGitCheckoutProgressLine(line);
+                    return parsed ? onCheckoutProgress(parsed) : Effect.void;
+                  },
+                },
+              }
+            : {}),
+        },
+      );
 
     if (progress?.onWorktreeClaimed) {
       yield* progress.onWorktreeClaimed(worktreePath);
@@ -3352,18 +3486,43 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         yield* progress.onSubmodulesStarted();
       }
       const onSubmoduleLine = progress?.onSubmoduleLine;
-      yield* runGit(
-        "GitVcsDriver.createWorktree.updateSubmodules",
-        worktreePath,
+      const submoduleArgs =
         submoduleMode.value === "recursive"
           ? ["submodule", "update", "--init", "--recursive"]
-          : ["submodule", "update", "--init"],
-        onSubmoduleLine
-          ? {
-              env: { LC_ALL: "C" },
-              progress: { onStdoutLine: onSubmoduleLine, onStderrLine: onSubmoduleLine },
-            }
-          : {},
+          : ["submodule", "update", "--init"];
+      yield* (
+        ownedBinding
+          ? runOwned(
+              worktreePath,
+              [
+                "--manifest",
+                ownedBinding.manifest,
+                "--home",
+                ownedBinding.homeId,
+                "use-worktree",
+                "--binding",
+                ownedBinding.bindingPath,
+                "--cwd",
+                worktreePath,
+                "--",
+                "git",
+                ...submoduleArgs,
+              ],
+              onSubmoduleLine,
+            )
+          : runGit(
+              "GitVcsDriver.createWorktree.updateSubmodules",
+              worktreePath,
+              submoduleMode.value === "recursive"
+                ? ["submodule", "update", "--init", "--recursive"]
+                : ["submodule", "update", "--init"],
+              onSubmoduleLine
+                ? {
+                    env: { LC_ALL: "C" },
+                    progress: { onStdoutLine: onSubmoduleLine, onStderrLine: onSubmoduleLine },
+                  }
+                : {},
+            )
       ).pipe(
         Effect.matchEffect({
           onFailure: (cause) =>
@@ -3650,6 +3809,25 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     "removeWorktree",
   )(function* (input) {
     const args = ["worktree", "remove"];
+    const protectedRoots = ownedWorktrees
+      ? [ownedWorktrees.publishedRoot, ownedWorktrees.physicalRoot]
+      : [];
+    const candidate = path.resolve(input.path);
+    if (
+      protectedRoots.some((root) => {
+        const relative = path.relative(path.resolve(root), candidate);
+        return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+      }) ||
+      (yield* fileSystem
+        .exists(path.join(candidate, ".pharos-owned-worktree.json"))
+        .pipe(Effect.orElseSucceed(() => true)))
+    ) {
+      return yield* new GitCommandError({
+        ...gitCommandContext({ operation: "GitVcsDriver.removeWorktree", cwd: input.cwd, args }),
+        detail:
+          "Externally owned worktrees are retained by WorkLifecycle; native deletion is refused.",
+      });
+    }
     if (input.force) {
       args.push("--force");
     }

@@ -45,6 +45,12 @@ export const baseDirFlag = Flag.String("base-dir").pipe(
   ),
   Flag.optional,
 );
+const ownedWorktreesDirFlag = Flag.String("owned-worktrees-dir").pipe(
+  Flag.withDescription(
+    "Published root for eligible externally owned T3 worktrees (does not move T3 state).",
+  ),
+  Flag.optional,
+);
 const devUrlFlag = Flag.String("dev-url").pipe(
   Flag.withSchema(Schema.URLFromString),
   Flag.withDescription("Dev web URL to proxy/redirect to (equivalent to VITE_DEV_SERVER_URL)."),
@@ -194,6 +200,7 @@ const DevAuthTokenConfig = Config.Redacted("T3CODE_DEV_AUTH_TOKEN").pipe(
 );
 
 export interface CliServerFlags {
+  readonly ownedWorktreesDir?: Option.Option<string>;
   readonly mode: Option.Option<ServerConfig.RuntimeMode>;
   readonly port: Option.Option<number>;
   readonly host: Option.Option<string>;
@@ -223,6 +230,7 @@ export const projectLocationFlags = {
 } as const;
 
 export const sharedServerCommandFlags = {
+  ownedWorktreesDir: ownedWorktreesDirFlag,
   mode: modeFlag,
   port: portFlag,
   host: hostFlag,
@@ -271,6 +279,86 @@ export const resolveServerConfig = (
     const path = yield* Path.Path;
     const fs = yield* FileSystem.FileSystem;
     const env = yield* EnvServerConfig;
+    const ownedFields = yield* Config.all({
+      publishedRoot: Config.String("T3CODE_OWNED_WORKTREES_DIR").pipe(
+        Config.option,
+        Config.map(Option.getOrUndefined),
+      ),
+      physicalRoot: Config.String("T3CODE_OWNED_WORKTREES_PHYSICAL_DIR").pipe(
+        Config.option,
+        Config.map(Option.getOrUndefined),
+      ),
+      producerCommand: Config.String("T3CODE_OWNED_WORKTREE_PRODUCER").pipe(
+        Config.option,
+        Config.map(Option.getOrUndefined),
+      ),
+      manifest: Config.String("T3CODE_OWNED_WORKTREE_MANIFEST").pipe(
+        Config.option,
+        Config.map(Option.getOrUndefined),
+      ),
+      homeId: Config.String("T3CODE_OWNED_WORKTREE_HOME").pipe(
+        Config.option,
+        Config.map(Option.getOrUndefined),
+      ),
+      cacheHomeId: Config.String("T3CODE_OWNED_CACHE_HOME").pipe(
+        Config.option,
+        Config.map(Option.getOrUndefined),
+      ),
+      owner: Config.String("T3CODE_OWNED_WORKTREE_OWNER").pipe(
+        Config.option,
+        Config.map(Option.getOrUndefined),
+      ),
+      sourceCommonDir: Config.String("T3CODE_OWNED_REPO_COMMON_DIR").pipe(
+        Config.option,
+        Config.map(Option.getOrUndefined),
+      ),
+    });
+    const publishedRoot =
+      Option.getOrUndefined(flags.ownedWorktreesDir ?? Option.none()) ?? ownedFields.publishedRoot;
+    let ownedWorktrees: ServerConfig.OwnedWorktreesConfig | undefined;
+    if (
+      Object.values(ownedFields).some((value) => value !== undefined) ||
+      publishedRoot !== undefined
+    ) {
+      const {
+        physicalRoot,
+        producerCommand,
+        manifest,
+        homeId,
+        cacheHomeId,
+        owner,
+        sourceCommonDir,
+      } = ownedFields;
+      if (
+        !publishedRoot ||
+        !physicalRoot ||
+        !producerCommand ||
+        !manifest ||
+        !homeId ||
+        !cacheHomeId ||
+        !owner ||
+        !sourceCommonDir ||
+        ![publishedRoot, physicalRoot, producerCommand, manifest, sourceCommonDir].every((value) =>
+          path.isAbsolute(value),
+        ) ||
+        homeId === cacheHomeId
+      ) {
+        return yield* new CliError.UserError({
+          cause:
+            "Incomplete or invalid owned worktree configuration; no fallback allocation is allowed.",
+        });
+      }
+      ownedWorktrees = {
+        publishedRoot,
+        physicalRoot,
+        producerCommand,
+        manifest,
+        homeId,
+        cacheHomeId,
+        owner,
+        sourceCommonDir,
+      };
+    }
     const normalizedFlags = {
       mode: flags.mode ?? Option.none(),
       port: flags.port ?? Option.none(),
@@ -444,6 +532,7 @@ export const resolveServerConfig = (
     );
 
     const config: ServerConfig.ServerConfig["Service"] = {
+      ...(ownedWorktrees === undefined ? {} : { ownedWorktrees }),
       logLevel,
       traceMinLevel: env.traceMinLevel,
       traceTimingEnabled: env.traceTimingEnabled,

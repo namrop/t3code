@@ -391,6 +391,7 @@ const make = Effect.gen(function* () {
               path: null,
             },
             {
+              ownedProject: { id: project.id, scripts: project.scripts },
               progress: {
                 onWorktreeClaimed: (path) =>
                   Effect.sync(() => {

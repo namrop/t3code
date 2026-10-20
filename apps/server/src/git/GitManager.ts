@@ -70,6 +70,8 @@ import * as ProviderRegistry from "../provider/Services/ProviderRegistry.ts";
 import { extractBranchNameFromRemoteRef } from "./remoteRefs.ts";
 import { detachStackFrame } from "./detachStackFrame.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as ServerConfig from "../config.ts";
+import { resolveOwnedEnrollment } from "../vcs/ownedWorktrees.ts";
 import type { GitManagerServiceError } from "@t3tools/contracts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
@@ -715,6 +717,50 @@ export const make = Effect.gen(function* () {
   const serverSettingsService = yield* ServerSettings.ServerSettingsService;
   const threads = yield* ProjectionStore.ProjectionStoreV2;
   const projects = yield* ProjectStore.ProjectStoreV2;
+  const serverConfig = yield* Effect.serviceOption(ServerConfig.ServerConfig);
+  const ownedEnrollmentFor = Effect.fnUntraced(function* (
+    cwd: string,
+    projectHint?: GitVcsDriver.CreateWorktreeOptions["ownedProject"],
+  ) {
+    if (Option.isNone(serverConfig) || !serverConfig.value.ownedWorktrees) return undefined;
+    const row = projectHint
+      ? null
+      : yield* projects.findActiveByWorkspaceRoot(cwd).pipe(Effect.orElseSucceed(Option.none));
+    const project =
+      projectHint ??
+      (row && Option.isSome(row)
+        ? { id: row.value.projectId, scripts: row.value.scripts }
+        : undefined);
+    // No context is not permission to bypass a project override.
+    if (!project) return undefined;
+    const settings = yield* serverSettingsService.getSettings.pipe(
+      Effect.mapError(
+        (cause) =>
+          new GitCommandError({
+            operation: "GitManager.ownedEnrollment",
+            cwd,
+            command: "resolve-project-settings",
+            detail: "Cannot resolve owned worktree setup overrides before allocation.",
+            cause,
+          }),
+      ),
+    );
+    const manifest = yield* fileSystem
+      .readFileString(path.join(cwd, "package.json"))
+      .pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(
+            Schema.fromJsonString(
+              Schema.Struct({ scripts: Schema.Struct({ dev: Schema.String }) }),
+            ),
+          ),
+        ),
+        Effect.option,
+      );
+    return Option.isSome(manifest)
+      ? resolveOwnedEnrollment(settings, project, manifest.value.scripts.dev)
+      : undefined;
+  });
   /** Environment settings with the acting project's overrides applied. */
   const projectSettingsFor = Effect.fnUntraced(function* (input: {
     readonly cwd: string;
@@ -743,7 +789,15 @@ export const make = Effect.gen(function* () {
             Effect.map((settings) => settings.worktreeSubmodules),
             Effect.orElseSucceed(() => null),
           );
-    return yield* gitCore.createWorktree(input, { ...options, submodules });
+    const ownedEnrollment =
+      options?.ownedEnrollment !== undefined
+        ? options.ownedEnrollment
+        : yield* ownedEnrollmentFor(input.cwd, options?.ownedProject);
+    return yield* gitCore.createWorktree(input, {
+      ...options,
+      submodules,
+      ...(ownedEnrollment === undefined ? {} : { ownedEnrollment }),
+    });
   });
 
   const readRepositoryInstructions = (cwd: string, fileName: string) =>
@@ -2597,7 +2651,16 @@ export const make = Effect.gen(function* () {
         });
       }
 
-      const worktree = yield* gitCore.createWorktree(
+      const prProject = input.threadId
+        ? yield* threads.getThreadShell(input.threadId).pipe(
+            Effect.flatMap((thread) =>
+              thread ? projects.get(thread.projectId) : Effect.succeed(Option.none()),
+            ),
+            Effect.map(Option.getOrUndefined),
+            Effect.orElseSucceed(() => undefined),
+          )
+        : undefined;
+      const worktree = yield* createWorktree(
         {
           cwd: input.cwd,
           refName: localPullRequestBranch,
@@ -2605,6 +2668,12 @@ export const make = Effect.gen(function* () {
         },
         {
           // Best effort: a settings read failure falls back to the checkout's t3.json.
+          ownedEnrollment: prProject
+            ? ((yield* ownedEnrollmentFor(input.cwd, {
+                id: prProject.projectId,
+                scripts: prProject.scripts,
+              })) ?? null)
+            : null,
           submodules: yield* projectSettingsFor(input).pipe(
             Effect.map((settings) => settings.worktreeSubmodules),
             Effect.orElseSucceed(() => null),

@@ -60,12 +60,24 @@ export interface DeriveServerPathsOptions {
   readonly baseDirIsExplicit?: boolean;
 }
 
+export interface OwnedWorktreesConfig {
+  readonly publishedRoot: string;
+  readonly physicalRoot: string;
+  readonly producerCommand: string;
+  readonly manifest: string;
+  readonly homeId: string;
+  readonly cacheHomeId: string;
+  readonly owner: string;
+  readonly sourceCommonDir: string;
+}
+
 /**
  * ServerConfig - Service tag for server runtime configuration.
  */
 export class ServerConfig extends Context.Service<
   ServerConfig,
   ServerDerivedPaths & {
+    readonly ownedWorktrees?: OwnedWorktreesConfig;
     readonly logLevel: LogLevel.LogLevel;
     readonly traceMinLevel: LogLevel.LogLevel;
     readonly traceTimingEnabled: boolean;

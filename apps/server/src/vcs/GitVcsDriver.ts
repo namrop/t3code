@@ -31,6 +31,8 @@ import {
   type VcsStatusInput,
   type VcsStatusResult,
   type WorktreeSubmodules,
+  type ProjectId,
+  type ProjectScript,
 } from "@t3tools/contracts";
 import {
   makeGitVcsDriverCore,
@@ -150,6 +152,12 @@ export interface CreateWorktreeProgress {
 
 export interface CreateWorktreeOptions {
   readonly progress?: CreateWorktreeProgress;
+  readonly ownedProject?: { readonly id: ProjectId; readonly scripts: readonly ProjectScript[] };
+  /** Resolved project/environment commands, never an input from the public wire. */
+  readonly ownedEnrollment?: {
+    readonly setupCommand: string;
+    readonly devCommand: string;
+  } | null;
   /**
    * The project-over-environment `worktreeSubmodules` setting. Null (or
    * omitted, for callers without settings access) defers to the checkout's
