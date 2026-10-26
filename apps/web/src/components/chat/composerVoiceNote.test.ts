@@ -446,4 +446,22 @@ describe("VoiceNoteRecorder", () => {
     expect(recorders[0]!.stopCalls).toBe(1);
     expect(track.stopped).toBe(true);
   });
+
+  it.fails("scar 01a11825: browser interruption leaves captured speech recoverable", async () => {
+    const { recorder, recorders } = setup();
+    try {
+      await recorder.start();
+      recorders[0]!.emit("speech before screen sleep");
+
+      // A browser suspension/error is not the speaker cancelling the note.
+      // Retain the real recorder's received chunks across that interruption.
+      recorders[0]!.onerror?.(new Error("recording interrupted by browser"));
+      const partial = await recorder.finish();
+
+      expect(partial).not.toBeNull();
+      expect(await partial!.text()).toContain("speech before screen sleep");
+    } finally {
+      recorder.dispose();
+    }
+  });
 });
