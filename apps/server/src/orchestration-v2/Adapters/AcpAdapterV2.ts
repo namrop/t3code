@@ -104,6 +104,7 @@ import {
 } from "../../provider/T3OrchestrationInstructions.ts";
 import { buildRuntimeInstructions } from "../../provider/RuntimeInstructions.ts";
 import * as IdAllocator from "../IdAllocator.ts";
+import { isTurnAuthor } from "../TurnAuthor.ts";
 import { type ProviderContinuationRequest } from "../ProviderContinuationRequests.ts";
 import {
   type BackgroundWork,
@@ -7298,7 +7299,18 @@ export function makeAcpAdapterV2(
               return;
             }
             const promptGeneration = yield* Ref.get(runtimeCallbackGeneration);
-            yield* runtime.prompt({ prompt: promptParts!.prompt }).pipe(
+            const turnAuthor = turnInput.message.turnAuthor;
+            const labelledHermesTurn = driver === "hermes" && isTurnAuthor(turnAuthor);
+            if (driver === "hermes" && !labelledHermesTurn) {
+              yield* Effect.logWarning(
+                "Hermes prompt turn-author label absent or invalid; omitted",
+              );
+            }
+            const promptPayload = {
+              prompt: promptParts!.prompt,
+              ...(labelledHermesTurn ? { _meta: { turnAuthor } } : {}),
+            };
+            yield* runtime.prompt(promptPayload).pipe(
               Effect.tap(() =>
                 Ref.update(promptInstructionStates, (current) => {
                   if (promptParts?.instructionState === undefined) return current;

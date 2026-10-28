@@ -62,6 +62,8 @@ export const ProviderAdapterV2TurnMessage = Schema.Struct({
   creationSource: OrchestrationV2ConversationMessage.fields.creationSource,
   scheduledTaskId: OrchestrationV2ConversationMessage.fields.scheduledTaskId,
   senderThreadId: OrchestrationV2ConversationMessage.fields.senderThreadId,
+  // Bookkeeping is deliberately permissive here: invalid labels must not fail a turn.
+  turnAuthor: Schema.optional(Schema.Unknown),
 });
 export type ProviderAdapterV2TurnMessage = typeof ProviderAdapterV2TurnMessage.Type;
 

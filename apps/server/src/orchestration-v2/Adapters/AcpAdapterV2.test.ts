@@ -13,6 +13,7 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   CheckpointId,
   GrokSettings,
+  HermesSettings,
   OpenClawSettings,
   AcpRegistrySettings,
   EnvironmentId,
@@ -42,6 +43,7 @@ import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
@@ -105,6 +107,7 @@ import {
 } from "./AcpRegistryAdapterV2.ts";
 
 const DEFAULT_GROK_SETTINGS = Schema.decodeSync(GrokSettings)({});
+const DEFAULT_HERMES_SETTINGS = Schema.decodeSync(HermesSettings)({});
 const DEFAULT_OPENCLAW_SETTINGS = Schema.decodeSync(OpenClawSettings)({});
 const DEFAULT_ACP_REGISTRY_SETTINGS = Schema.decodeSync(AcpRegistrySettings)({});
 
@@ -613,6 +616,132 @@ function makeTurnInput(input: {
 }
 
 describe("AcpAdapterV2", () => {
+  it.effect.each([
+    {
+      name: "typed",
+      driver: "hermes",
+      label: { version: 1, author: "luis", via: "t3", kind: "typed" },
+    },
+    {
+      name: "task",
+      driver: "hermes",
+      label: { version: 1, author: "machine", via: "t3", kind: "task_notification" },
+    },
+    { name: "absent", driver: "hermes", label: undefined },
+    {
+      name: "invalid",
+      driver: "hermes",
+      label: { version: 1, author: "luis", via: "hermes", kind: "typed" },
+    },
+    {
+      name: "extra-key",
+      driver: "hermes",
+      label: { version: 1, author: "luis", via: "t3", kind: "typed", extra: true },
+    },
+    {
+      name: "other-provider",
+      driver: "openclaw",
+      label: { version: 1, author: "luis", via: "t3", kind: "typed" },
+    },
+  ] as const)(
+    "turn-author sends $name metadata only on Hermes ACP prompts",
+    ({ name, driver, label }) => {
+      const warnings: unknown[] = [];
+      const logger = Logger.make<unknown, void>(({ message }) => {
+        if (
+          Array.isArray(message) &&
+          message.includes("Hermes prompt turn-author label absent or invalid; omitted")
+        )
+          warnings.push(message);
+      });
+      return Effect.gen(function* () {
+        const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const path = yield* Path.Path;
+        const protocolEvents = yield* Queue.unbounded<EffectAcpProtocol.AcpProtocolLogEvent>();
+        const instanceId = ProviderInstanceId.make(`turn-author-${name}`);
+        const threadId = ThreadId.make(`thread-turn-author-${name}`);
+        const options = {
+          crypto: yield* Crypto.Crypto,
+          instanceId,
+          fileSystem: yield* FileSystem.FileSystem,
+          idAllocator: yield* IdAllocator.IdAllocatorV2,
+          serverConfig: yield* ServerConfig.ServerConfig,
+          selfInvocation: yield* resolveSelfInvocation(),
+          environment: {},
+          childProcessSpawner: spawner,
+          makeRuntime: makeMockRuntime({
+            childProcessSpawner: spawner,
+            mockAgentPath: yield* path.fromFileUrl(
+              new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+            ),
+            protocolEvents,
+            wrapRuntime: (runtime) => ({
+              ...runtime,
+              setMode: () => Effect.succeed({}),
+              setSessionModel: () => Effect.succeed({}),
+            }),
+          }),
+        };
+        const adapter =
+          driver === "hermes"
+            ? makeHermesAdapterV2({ ...options, settings: DEFAULT_HERMES_SETTINGS })
+            : makeOpenClawAdapterV2({ ...options, settings: DEFAULT_OPENCLAW_SETTINGS });
+        const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: process.cwd(),
+        });
+        const modelSelection = { instanceId, model: "default" };
+        const session = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make(`session-${name}`),
+          modelSelection,
+          runtimePolicy,
+        });
+        const providerThread = yield* session.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const turn = makeTurnInput({
+          threadId,
+          providerThread,
+          instanceId,
+          runtimePolicy,
+          now: yield* DateTime.now,
+        });
+        yield* session.startTurn({ ...turn, message: { ...turn.message, turnAuthor: label } });
+        const events = yield* session.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runCollect,
+        );
+        assert.isTrue(
+          events.some((event) => event.type === "turn.terminal" && event.status === "completed"),
+        );
+        let request: EffectAcpProtocol.AcpProtocolLogEvent;
+        do {
+          request = yield* Queue.take(protocolEvents);
+        } while (
+          request.direction !== "outgoing" ||
+          rawProtocolMethod(request) !== "session/prompt"
+        );
+        const expected =
+          driver === "hermes" && (name === "typed" || name === "task")
+            ? { turnAuthor: label }
+            : undefined;
+        assert.deepEqual(rawProtocolRequestParam(request, "_meta"), expected);
+        assert.lengthOf(warnings, driver === "hermes" && expected === undefined ? 1 : 0);
+        assert.include(rawProtocolPromptText(request), "test prompt");
+        assert.notInclude(rawProtocolPromptText(request), "turnAuthor");
+      }).pipe(
+        Effect.provide(
+          Layer.merge(testLayer, Logger.layer([logger], { mergeWithExisting: false })),
+        ),
+        Effect.scoped,
+      );
+    },
+  );
+
   it.live.each(["failed", "recovered", "completed", "cancelled"] as const)(
     "projects Mistral retry notices and their %s outcome",
     (outcome) =>

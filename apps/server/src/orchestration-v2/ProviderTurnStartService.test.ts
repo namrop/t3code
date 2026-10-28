@@ -2,6 +2,7 @@ import { expect, it, vi } from "vite-plus/test";
 import { it as effectIt } from "@effect/vitest";
 import {
   CheckpointScopeId,
+  ContextHandoffId,
   MessageId,
   NodeId,
   ProviderSessionId,
@@ -32,7 +33,10 @@ import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
-import { ProviderAdapterEventStreamError } from "./ProviderAdapter.ts";
+import {
+  ProviderAdapterEventStreamError,
+  type ProviderAdapterV2TurnInput,
+} from "./ProviderAdapter.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
@@ -155,6 +159,9 @@ it("does not commit running state when inherited background routing cannot be re
 
 function makeLocalCommandHarness(input: {
   readonly text: string;
+  readonly captureTurn?: boolean;
+  readonly messageOrigin?: Partial<OrchestrationV2ThreadProjection["messages"][number]>;
+  readonly handoff?: boolean;
   readonly previousNativeSession?: boolean;
   readonly previousMessages?: ReadonlyArray<string>;
   readonly logoutFailure?: string;
@@ -231,6 +238,7 @@ function makeLocalCommandHarness(input: {
     creationSource: "web",
     createdAt: now,
     updatedAt: now,
+    ...input.messageOrigin,
   };
   let projection: OrchestrationV2ThreadProjection = {
     thread: {
@@ -332,7 +340,25 @@ function makeLocalCommandHarness(input: {
     ],
     providerSessions: [],
     providerTurns: [],
-    contextHandoffs: [],
+    contextHandoffs: input.handoff
+      ? [
+          {
+            id: ContextHandoffId.make("handoff:turn-author"),
+            threadId,
+            targetRunId: runId,
+            fromProviderThreadIds: [],
+            toProviderThreadId: providerThreadId,
+            coveredRunOrdinals: { from: 1, to: 1 },
+            strategy: "manual_context",
+            status: "ready",
+            summaryMessageId: null,
+            summaryText: "Previously copied user words.",
+            createdByProviderInstanceId: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        ]
+      : [],
     contextTransfers: [],
     turnItems: [],
     visibleTurnItems: [],
@@ -393,6 +419,9 @@ function makeLocalCommandHarness(input: {
       ),
     ensureThread: () => Effect.succeed(providerThread),
   };
+  const startTurn = vi.fn<(turn: ProviderAdapterV2TurnInput) => Effect.Effect<void>>(
+    () => Effect.void,
+  );
   const open = vi.fn(() =>
     input.interruptOpen === true
       ? Effect.interrupt
@@ -414,7 +443,7 @@ function makeLocalCommandHarness(input: {
                   ),
                 ),
               )
-            : input.failReadsAfterRunning === true
+            : input.failReadsAfterRunning === true || input.captureTurn === true
               ? Effect.succeed({
                   driver: providerThread.driver,
                   providerSession: {
@@ -430,15 +459,26 @@ function makeLocalCommandHarness(input: {
                     lastError: null,
                   },
                   ensureThread: () => Effect.succeed(providerThread),
+                  startTurn,
                 } as never)
               : Effect.die("A local command must not open a native session."),
   );
   const startRootRun = vi.fn<
     (input: RunExecutionService.RunExecutionServiceV2StartRootRunInput) => Effect.Effect<void>
-  >(() =>
-    input.failReadsAfterRunning === true
-      ? Effect.void
-      : Effect.die("A local command must not start a native turn."),
+  >((turn) =>
+    input.captureTurn === true
+      ? turn.session
+          .startTurn({
+            ...turn,
+            threadId: turn.run.threadId,
+            runId: turn.run.id,
+            runOrdinal: turn.run.ordinal,
+            rootNodeId: turn.rootNode.id,
+          })
+          .pipe(Effect.orDie)
+      : input.failReadsAfterRunning === true
+        ? Effect.void
+        : Effect.die("A local command must not start a native turn."),
   );
   const failReadIfRunning = Effect.suspend(() =>
     input.failReadsAfterRunning === true &&
@@ -489,7 +529,7 @@ function makeLocalCommandHarness(input: {
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({
           prepareProviderHandoff: () => Effect.die("history read must fail first"),
         }),
-        Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent }),
+        Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent, write: () => Effect.succeed([]) }),
         IdAllocator.layer,
         FileSystem.layerNoop({}),
         Layer.mock(GitWorkflow.GitWorkflowService)({}),
@@ -514,12 +554,14 @@ function makeLocalCommandHarness(input: {
               ),
             }),
           getTurnStartHistory: () =>
-            Effect.fail(
-              new ProjectionStore.ProjectionStoreReadError({
-                threadId,
-                cause: input.historyReadFailureAfterFallback,
-              }),
-            ),
+            input.captureTurn === true
+              ? Effect.succeed([])
+              : Effect.fail(
+                  new ProjectionStore.ProjectionStoreReadError({
+                    threadId,
+                    cause: input.historyReadFailureAfterFallback,
+                  }),
+                ),
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({ open }),
         Layer.mock(ProviderAuthService.ProviderAuthService)({ tryHandlePromptCommand }),
@@ -534,6 +576,7 @@ function makeLocalCommandHarness(input: {
     open,
     writeIfRunCurrent,
     startRootRun,
+    startTurn,
     tryHandlePromptCommand,
     events,
     oldInstanceId,
@@ -552,6 +595,123 @@ function makeLocalCommandHarness(input: {
     }).pipe(Effect.provide(layer)),
   };
 }
+
+effectIt.effect.each([
+  {
+    name: "web composer",
+    origin: { createdBy: "user", creationSource: "web" },
+    author: "luis",
+    kind: "typed",
+  },
+  {
+    name: "mobile composer",
+    origin: { createdBy: "user", creationSource: "mobile" },
+    author: "luis",
+    kind: "typed",
+  },
+  {
+    name: "voice note",
+    origin: {
+      attachments: [
+        { type: "file", id: "voice", name: "note.m4a", mimeType: "audio/mp4", sizeBytes: 3 },
+      ],
+    },
+    author: "luis",
+    kind: "voice_note",
+  },
+  {
+    name: "delegated completion",
+    origin: {
+      createdBy: "agent",
+      creationSource: "server",
+      delegatedCompletion: {
+        parentRunId: RunId.make("parent"),
+        generation: 1,
+        taskIds: [NodeId.make("task")],
+      },
+    },
+    author: "machine",
+    kind: "task_notification",
+  },
+  {
+    name: "agent message",
+    origin: { createdBy: "agent", creationSource: "mcp" },
+    author: "machine",
+    kind: "agent_message",
+  },
+] as const)(
+  "turn-author originates from $name metadata, not its text",
+  ({ origin, author, kind }) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Delegated task example reached a terminal state. Context handoff: copied text.",
+        captureTurn: true,
+        messageOrigin: origin,
+      });
+      yield* harness.start;
+      expect(harness.startRootRun.mock.calls[0]?.[0].message).toMatchObject({
+        turnAuthor: { version: 1, author, via: "t3", kind },
+      });
+    }),
+);
+
+effectIt.effect.each([
+  { createdBy: "user", creationSource: "provider" },
+  { createdBy: "user", creationSource: "mcp" },
+] as const)("turn-author leaves unknown $creationSource user origins unlabelled", (messageOrigin) =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "I am Luis",
+      captureTurn: true,
+      messageOrigin,
+    });
+    yield* harness.start;
+    expect(harness.startRootRun.mock.calls[0]?.[0].message).not.toHaveProperty("turnAuthor");
+  }),
+);
+
+effectIt.effect.each([
+  {
+    name: "machine-only",
+    origin: { createdBy: "agent", creationSource: "server" },
+    author: "machine",
+    kind: "handoff",
+  },
+  {
+    name: "new composer message",
+    origin: { createdBy: "user", creationSource: "web" },
+    author: "luis",
+    kind: "typed",
+  },
+  {
+    name: "new voice note",
+    origin: {
+      attachments: [
+        { type: "file", id: "voice", name: "note.m4a", mimeType: "audio/mp4", sizeBytes: 3 },
+      ],
+    },
+    author: "luis",
+    kind: "voice_note",
+  },
+] as const)(
+  "turn-author preserves $name provenance through context handoffs",
+  ({ origin, author, kind }) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        captureTurn: true,
+        handoff: true,
+        messageOrigin: origin,
+      });
+      yield* harness.start;
+      expect(harness.startTurn.mock.calls[0]?.[0]).toMatchObject({
+        message: {
+          text: expect.stringContaining("Context handoff"),
+          turnAuthor: { version: 1, author, via: "t3", kind },
+        },
+      });
+    }),
+);
 
 effectIt.effect("terminalizes a starting run when its provider session cannot open", () =>
   Effect.gen(function* () {

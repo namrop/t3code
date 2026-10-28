@@ -36,6 +36,7 @@ import {
   latestNativeContextUsage,
 } from "./ContextHandoffBudget.ts";
 import { deliverContextHandoffs } from "./ContextHandoffDelivery.ts";
+import { t3TurnAuthor } from "./TurnAuthor.ts";
 import {
   ProviderAdapterTurnStartError,
   type ProviderAdapterV2Error,
@@ -1183,11 +1184,16 @@ export const layer: Layer.Layer<
             .join("\n\n");
           // A note continuation has no turn to resume; its text is the prompt.
           const { restartContinuationOfRunId: _resumedRunId, ...promptedInput } = turnInput;
+          const turnAuthor = t3TurnAuthor(message, {
+            handoff: delivery.context !== "",
+            replay: run.restartContinuationOfRunId !== undefined,
+          });
           yield* start({
             ...(noteContinuation ? promptedInput : turnInput),
             message: {
               ...turnInput.message,
               text: context === "" ? userText : `${context}\n\nUser message:\n${userText}`,
+              ...(turnAuthor === undefined ? {} : { turnAuthor }),
             },
           });
           // The provider already accepted the turn. A stale pending marker
@@ -1220,6 +1226,9 @@ export const layer: Layer.Layer<
         !noteContinuation
           ? session
           : makeDeliverySession(session, startWithHandoffs);
+      const turnAuthor = t3TurnAuthor(message, {
+        replay: run.restartContinuationOfRunId !== undefined,
+      });
       yield* runExecution.startRootRun({
         commandId: CommandId.make(`command:effect:provider-turn.start:${run.id}`),
         appThread: projection.thread,
@@ -1261,6 +1270,7 @@ export const layer: Layer.Layer<
           attachments: message.attachments,
           createdBy: message.createdBy,
           creationSource: message.creationSource,
+          ...(turnAuthor === undefined ? {} : { turnAuthor }),
           ...(message.scheduledTaskId === undefined
             ? {}
             : { scheduledTaskId: message.scheduledTaskId }),
