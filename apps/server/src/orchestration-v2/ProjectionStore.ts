@@ -3299,11 +3299,13 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           SELECT t.payload_json, r.run_id, r.completed_at,
             item.payload_json AS failure_payload_json,
             (
+              -- Start from the thread's bindings (see selectShellThreadRows' last_error).
               SELECT json_extract(session.payload_json, '$.lastError')
-              FROM orchestration_v2_projection_provider_sessions session
-              INNER JOIN orchestration_v2_projection_provider_session_bindings binding
-                ON binding.provider_session_id = session.provider_session_id
+              FROM orchestration_v2_projection_provider_session_bindings binding
+                INDEXED BY orchestration_v2_projection_provider_session_bindings_thread_idx
+              CROSS JOIN orchestration_v2_projection_provider_sessions session
               WHERE binding.thread_id = t.thread_id
+                AND session.provider_session_id = binding.provider_session_id
                 AND session.provider_instance_id = t.provider_instance_id
               ORDER BY session.updated_at DESC, session.provider_session_id DESC
               LIMIT 1
@@ -4854,11 +4856,15 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 LIMIT 1
               ) AS activity_run_started_at,
               (
+                -- Start from the thread's bindings. Without statistics SQLite otherwise drives
+                -- this from provider_sessions by provider_instance_id and visits every session
+                -- of the instance for each thread (about 4 s of CPU per full snapshot on Sol).
                 SELECT json_extract(session.payload_json, '$.lastError')
-                FROM orchestration_v2_projection_provider_sessions session
-                INNER JOIN orchestration_v2_projection_provider_session_bindings binding
-                  ON binding.provider_session_id = session.provider_session_id
+                FROM orchestration_v2_projection_provider_session_bindings binding
+                  INDEXED BY orchestration_v2_projection_provider_session_bindings_thread_idx
+                CROSS JOIN orchestration_v2_projection_provider_sessions session
                 WHERE binding.thread_id = t.thread_id
+                  AND session.provider_session_id = binding.provider_session_id
                   AND session.provider_instance_id = t.provider_instance_id
                 ORDER BY session.updated_at DESC, session.provider_session_id DESC
                 LIMIT 1

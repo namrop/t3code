@@ -26,6 +26,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Statement from "effect/sql/Statement";
 import { projectThreadAwarenessV2 } from "@t3tools/shared/agentAwareness";
 
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
@@ -4468,3 +4469,54 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
     }),
   );
 });
+
+// getShellSnapshot reads every thread, and its last_error lookup ran once per thread. With no
+// ANALYZE statistics SQLite drove that lookup from provider_sessions by provider_instance_id,
+// visiting every session of the thread's provider instance (1,034 Hermes sessions on Sol) for
+// each of 1,383 threads: about 4 s of CPU on the synchronous main thread, once a minute from
+// the pull-request sync and again for every agent's t3_thread_list call (2026-10-28). The
+// lookup must start from the thread's bindings, through the binding thread_id index.
+it.effect("looks up a thread's last provider error through its session bindings", () =>
+  Effect.gen(function* () {
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const sql = yield* SqlClient.SqlClient;
+    const now = yield* DateTime.now;
+
+    const compiled: Array<readonly [string, ReadonlyArray<unknown>]> = [];
+    const capture: Statement.Transformer = (statement) => {
+      const [query, params] = statement.compile();
+      if (
+        query.includes("orchestration_v2_projection_provider_session_bindings") &&
+        query.includes("$.lastError")
+      ) {
+        compiled.push([query, params]);
+      }
+      return Effect.succeed(statement);
+    };
+    yield* store
+      .getShellSnapshot()
+      .pipe(Effect.provideService(Statement.CurrentTransformer, capture));
+    yield* store
+      .getLimitRecoveryCandidates({ now, autoResume: true, snooze: false })
+      .pipe(Effect.provideService(Statement.CurrentTransformer, capture));
+
+    assert.isAtLeast(compiled.length, 2);
+    for (const [query, params] of compiled) {
+      const plan = yield* sql.unsafe<{ readonly detail: string }>(
+        `EXPLAIN QUERY PLAN ${query}`,
+        params,
+      );
+      const details = plan.map((row) => row.detail).join(" | ");
+      assert.include(
+        details,
+        "orchestration_v2_projection_provider_session_bindings_thread_idx",
+        details,
+      );
+      assert.notInclude(
+        details,
+        "orchestration_v2_projection_provider_sessions_instance_status_idx",
+        details,
+      );
+    }
+  }).pipe(Effect.provide(Layer.fresh(TestLayer))),
+);
