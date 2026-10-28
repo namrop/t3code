@@ -518,3 +518,71 @@ it.effect("releases consumed application replay pages", () =>
     assert.equal(count, 1501);
   }).pipe(Effect.provide(TestLayer)),
 );
+
+// A resent command replays its receipt through readAgentEvents({ commandId }). Without
+// statistics SQLite planned that read on the (application_event_version, sequence) index and
+// walked every V2 event to test command_id; on Sol's 24 GB state database one such read held
+// the synchronous SQLite main thread for 198 s (2026-10-27). The read must use the command index.
+it.effect("reads a command's agent events through the command_id index", () =>
+  Effect.gen(function* () {
+    const store = yield* OrchestrationEventStore.OrchestrationEventStore;
+    const sql = yield* SqlClient.SqlClient;
+    const now = yield* DateTime.now;
+    const threadId = ThreadId.make("thread:command-index");
+    const eventFor = (name: string): OrchestrationV2DomainEvent => ({
+      id: EventId.make(`event:command-index:${name}`),
+      type: "turn-item.updated",
+      threadId,
+      occurredAt: now,
+      payload: {
+        id: TurnItemId.make(`tool:command-index:${name}`),
+        type: "command_execution",
+        threadId,
+        runId: null,
+        nodeId: null,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 1,
+        status: "completed",
+        title: name,
+        input: name,
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+      },
+    });
+    const wanted = CommandId.make("command:command-index:wanted");
+    yield* store.appendAgentEvents({ commandId: wanted, events: [eventFor("wanted")] });
+    yield* store.appendAgentEvents({
+      commandId: CommandId.make("command:command-index:other"),
+      events: [eventFor("other")],
+    });
+
+    const compiled: Array<readonly [string, ReadonlyArray<unknown>]> = [];
+    const capture: Statement.Transformer = (statement) => {
+      const [query, params] = statement.compile();
+      if (query.includes("FROM orchestration_events") && query.includes("command_id =")) {
+        compiled.push([query, params]);
+      }
+      return Effect.succeed(statement);
+    };
+    const events = yield* store
+      .readAgentEvents({ commandId: wanted })
+      .pipe(Stream.provideService(Statement.CurrentTransformer, capture), Stream.runCollect);
+    assert.deepEqual(
+      Array.from(events, (stored) => stored.event.id),
+      [EventId.make("event:command-index:wanted")],
+    );
+
+    assert.isAtLeast(compiled.length, 1);
+    const [query, params] = compiled[0]!;
+    const plan = yield* sql.unsafe<{ readonly detail: string }>(
+      `EXPLAIN QUERY PLAN ${query}`,
+      params,
+    );
+    const details = plan.map((row) => row.detail).join(" | ");
+    assert.include(details, "idx_orch_events_command_id", details);
+  }).pipe(Effect.provide(Layer.fresh(TestLayer))),
+);

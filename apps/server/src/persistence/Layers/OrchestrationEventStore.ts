@@ -300,9 +300,14 @@ const makeEventStore = Effect.gen(function* () {
         correlation_id
       FROM orchestration_events
       ${
-        input.onlyAgentEvents === true
-          ? sql``
-          : sql`INDEXED BY idx_orchestration_events_application_high_water`
+        // A command has a handful of events. Without this hint SQLite (no ANALYZE statistics)
+        // walks every application event in sequence order and tests command_id row by row,
+        // which on a large database blocks the synchronous SQLite thread for minutes.
+        input.commandId !== undefined
+          ? sql`INDEXED BY idx_orch_events_command_id`
+          : input.onlyAgentEvents === true
+            ? sql``
+            : sql`INDEXED BY idx_orchestration_events_application_high_water`
       }
       WHERE sequence > ${input.afterSequence}
         AND sequence <= ${input.throughSequence ?? Number.MAX_SAFE_INTEGER}
