@@ -41,105 +41,155 @@ const testLayer = Layer.mergeAll(
   ),
 );
 
-// Strict expected failure: the live base refuses Stop after the provider disappears.
-it.effect.fails("scar 01a1246d: Stop clears a running run whose provider session is gone", () =>
-  Effect.gen(function* () {
-    const orchestrator = yield* Orchestrator.OrchestratorV2;
-    const projections = yield* ProjectionStore.ProjectionStoreV2;
-    const threadId = ThreadId.make("thread:orphaned-run-scar");
-    const now = yield* DateTime.now;
-    yield* orchestrator.dispatch({
-      type: "thread.create",
-      commandId: CommandId.make("orphan:create"),
-      threadId,
-      projectId: ProjectId.make("project:orphaned-run-scar"),
-      title: "Orphaned run",
-      modelSelection,
-      runtimeMode: "full-access",
-      interactionMode: "default",
-      branch: null,
-      worktreePath: null,
-      createdBy: "user",
-      creationSource: "web",
-    });
-    yield* orchestrator.dispatch({
-      type: "message.dispatch",
-      commandId: CommandId.make("orphan:message"),
-      threadId,
-      messageId: MessageId.make("orphan:message"),
-      text: "Continue where you left off.",
-      attachments: [],
-      dispatchMode: { type: "start_immediately" },
-      createdBy: "user",
-      creationSource: "web",
-    });
-    const before = yield* projections.getThreadProjection(threadId);
-    const run = before.runs[0]!;
-    const node = before.nodes.find((candidate) => candidate.id === run.rootNodeId)!;
-    const providerThread = before.providerThreads.find(
-      (candidate) => candidate.id === run.providerThreadId,
-    )!;
-    const turnId = ProviderTurnId.make("turn:orphaned-run-scar");
-    const attempt = before.attempts.find((candidate) => candidate.id === run.activeAttemptId)!;
-    yield* projections.apply({
-      id: EventId.make("orphan:attempt"),
-      type: "run-attempt.updated",
-      threadId,
-      occurredAt: now,
-      payload: { ...attempt, providerTurnId: turnId, status: "running" },
-    });
-    yield* projections.apply({
-      id: EventId.make("orphan:running"),
-      type: "run.updated",
-      threadId,
-      occurredAt: now,
-      payload: { ...run, status: "running", startedAt: now },
-    });
-    yield* projections.apply({
-      id: EventId.make("orphan:node"),
-      type: "node.updated",
-      threadId,
-      occurredAt: now,
-      payload: { ...node, status: "running" },
-    });
-    yield* projections.apply({
-      id: EventId.make("orphan:provider-thread"),
-      type: "provider-thread.updated",
-      threadId,
-      occurredAt: now,
-      payload: {
-        ...providerThread,
-        providerSessionId: ProviderSessionId.make("session:already-gone"),
-      },
-    });
-    yield* projections.apply({
-      id: EventId.make("orphan:provider-turn"),
-      type: "provider-turn.updated",
-      threadId,
-      occurredAt: now,
-      payload: {
-        id: turnId,
-        providerThreadId: providerThread.id,
-        nodeId: node.id,
-        runAttemptId: run.activeAttemptId,
-        nativeTurnRef: null,
-        ordinal: 1,
-        status: "running",
-        startedAt: now,
-        completedAt: null,
-      },
-    });
-    const orphan = yield* projections.getThreadProjection(threadId);
-    assert.equal(orphan.runs[0]!.status, "running");
-    assert.equal(orphan.providerTurns[0]!.status, "running");
-    yield* orchestrator.dispatch({
-      type: "run.interrupt",
-      commandId: CommandId.make("orphan:stop"),
-      threadId,
-      runId: run.id,
-      holdQueue: true,
-    });
-    const after = yield* projections.getThreadProjection(threadId);
-    assert.equal(after.runs[0]!.status, "interrupted");
-  }).pipe(Effect.provide(testLayer)),
+it.effect.each([
+  { label: "stale session id", providerSessionId: ProviderSessionId.make("session:already-gone") },
+  { label: "null session id", providerSessionId: null },
+])(
+  "scar 01a1246d: Stop clears a running run whose provider session is gone ($label)",
+  ({ providerSessionId }) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = ThreadId.make("thread:orphaned-run-scar");
+      const now = yield* DateTime.now;
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("orphan:create"),
+        threadId,
+        projectId: ProjectId.make("project:orphaned-run-scar"),
+        title: "Orphaned run",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("orphan:message"),
+        threadId,
+        messageId: MessageId.make("orphan:message"),
+        text: "Continue where you left off.",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const before = yield* projections.getThreadProjection(threadId);
+      const run = before.runs[0]!;
+      const node = before.nodes.find((candidate) => candidate.id === run.rootNodeId)!;
+      const providerThread = before.providerThreads.find(
+        (candidate) => candidate.id === run.providerThreadId,
+      )!;
+      const turnId = ProviderTurnId.make("turn:orphaned-run-scar");
+      const attempt = before.attempts.find((candidate) => candidate.id === run.activeAttemptId)!;
+      yield* projections.apply({
+        id: EventId.make("orphan:attempt"),
+        type: "run-attempt.updated",
+        threadId,
+        occurredAt: now,
+        payload: { ...attempt, providerTurnId: turnId, status: "running" },
+      });
+      yield* projections.apply({
+        id: EventId.make("orphan:running"),
+        type: "run.updated",
+        threadId,
+        occurredAt: now,
+        payload: { ...run, status: "running", startedAt: now },
+      });
+      yield* projections.apply({
+        id: EventId.make("orphan:node"),
+        type: "node.updated",
+        threadId,
+        occurredAt: now,
+        payload: { ...node, status: "running" },
+      });
+      yield* projections.apply({
+        id: EventId.make("orphan:provider-thread"),
+        type: "provider-thread.updated",
+        threadId,
+        occurredAt: now,
+        payload: {
+          ...providerThread,
+          providerSessionId,
+          status: "active",
+          pendingBackgroundTasks: [{ taskId: "orphan:task", kind: "command" }],
+        },
+      });
+      yield* projections.apply({
+        id: EventId.make("orphan:provider-turn"),
+        type: "provider-turn.updated",
+        threadId,
+        occurredAt: now,
+        payload: {
+          id: turnId,
+          providerThreadId: providerThread.id,
+          nodeId: node.id,
+          runAttemptId: run.activeAttemptId,
+          nativeTurnRef: null,
+          ordinal: 1,
+          status: "running",
+          startedAt: now,
+          completedAt: null,
+        },
+      });
+      const orphan = yield* projections.getThreadProjection(threadId);
+      assert.equal(orphan.runs[0]!.status, "running");
+      assert.equal(orphan.providerTurns[0]!.status, "running");
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("orphan:queued"),
+        threadId,
+        messageId: MessageId.make("orphan:queued"),
+        text: "Hey",
+        attachments: [],
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      yield* orchestrator.dispatch({
+        type: "run.interrupt",
+        commandId: CommandId.make("orphan:stop"),
+        threadId,
+        runId: run.id,
+        holdQueue: true,
+      });
+      const after = yield* projections.getThreadProjection(threadId);
+      assert.equal(after.runs[0]!.status, "interrupted");
+      assert.isNotNull(after.runs[0]!.completedAt);
+      assert.equal(
+        after.attempts.find((candidate) => candidate.id === attempt.id)!.status,
+        "interrupted",
+      );
+      assert.equal(
+        after.nodes.find((candidate) => candidate.id === node.id)!.status,
+        "interrupted",
+      );
+      assert.equal(after.providerTurns[0]!.status, "interrupted");
+      assert.isNotNull(after.providerTurns[0]!.completedAt);
+      assert.deepEqual(
+        after.providerThreads.find((candidate) => candidate.id === providerThread.id)!
+          .pendingBackgroundTasks,
+        [],
+      );
+      assert.equal(
+        after.providerThreads.find((candidate) => candidate.id === providerThread.id)!.status,
+        "idle",
+      );
+      const request = after.turnItems.find((item) => item.type === "run_interrupt_request")!;
+      const result = after.turnItems.find((item) => item.type === "run_interrupt_result")!;
+      assert.equal(result.parentItemId, request.id);
+      assert.equal(result.providerTurnId, turnId);
+      assert.equal(after.runs[1]!.status, "queued");
+      assert.isTrue(after.runs[1]!.queueHeld);
+      yield* orchestrator.dispatch({
+        type: "queue.resume",
+        commandId: CommandId.make("orphan:resume"),
+        threadId,
+      });
+      const resumed = yield* projections.getThreadProjection(threadId);
+      assert.equal(resumed.runs[1]!.status, "starting");
+    }).pipe(Effect.provide(testLayer)),
 );
