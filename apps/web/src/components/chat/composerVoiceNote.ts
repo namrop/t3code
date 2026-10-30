@@ -16,7 +16,7 @@ export const VOICE_NOTE_BITS_PER_SECOND = 32_000;
 /** Same sample count and cadence as the phone app's dictation waveform. */
 export const VOICE_NOTE_WAVEFORM_SAMPLE_COUNT = 64;
 export const VOICE_NOTE_METERING_INTERVAL_MS = 80;
-/** MediaRecorder hands over data each second, so a crash loses at most that. */
+/** Collect audio in one-second chunks while recording. */
 const VOICE_NOTE_TIMESLICE_MS = 1_000;
 
 const VOICE_NOTE_RECORDER_MIME_TYPES = [
@@ -39,7 +39,13 @@ export function providerTakesVoiceNotes(
   return provider?.supportsAudioPrompts === true;
 }
 
-export type VoiceNotePhase = "idle" | "preparing" | "recording" | "sending" | "error";
+export type VoiceNotePhase =
+  | "idle"
+  | "preparing"
+  | "recording"
+  | "interrupted"
+  | "sending"
+  | "error";
 
 export type VoiceNoteState = {
   readonly phase: VoiceNotePhase;
@@ -207,6 +213,15 @@ export function resolveVoiceNotePresentation(state: VoiceNoteState): VoiceNotePr
         sendEnabled: true,
         sendLoading: false,
       };
+    case "interrupted":
+      return {
+        showsBar: true,
+        showsCancel: true,
+        statusKind: "label",
+        statusLabel: "Recording interrupted. Send to keep the audio.",
+        sendEnabled: true,
+        sendLoading: false,
+      };
     case "sending":
       return {
         showsBar: true,
@@ -268,6 +283,8 @@ type ActiveRecording = {
   readonly recorder: VoiceNoteMediaRecorder;
   readonly meter: VoiceNoteLevelMeter | null;
   readonly chunks: Blob[];
+  readonly stopped: Promise<void>;
+  readonly resolveStopped: () => void;
   readonly startedAt: number;
   readonly interval: ReturnType<typeof setInterval>;
   limitReported: boolean;
@@ -335,17 +352,32 @@ export class VoiceNoteRecorder {
     }
 
     const chunks: Blob[] = [];
+    let resolveStopped: () => void = () => {};
+    const stopped = new Promise<void>((resolve) => {
+      resolveStopped = resolve;
+    });
     recorder.ondataavailable = (event) => {
       if (event.data.size > 0) chunks.push(event.data);
     };
+    recorder.onstop = () => {
+      resolveStopped();
+      const active = this.active;
+      if (!active || session !== this.session) return;
+      clearInterval(active.interval);
+      active.meter?.close();
+      releaseStream(active.stream);
+      if (this.state.phase === "recording") {
+        this.setState({ ...this.state, phase: "interrupted" });
+      }
+    };
     recorder.onerror = () => {
       if (session !== this.session) return;
-      this.teardown({ stopRecorder: true });
-      this.setState({
-        ...VOICE_NOTE_IDLE_STATE,
-        phase: "error",
-        error: "Recording stopped unexpectedly.",
-      });
+      if (this.state.phase === "recording") {
+        this.setState({ ...this.state, phase: "interrupted" });
+      }
+      // Browser errors flush their final data before stop. Keep those handlers
+      // and the captured chunks; only an explicit cancel discards the note.
+      if (recorder.state !== "inactive") recorder.stop();
     };
 
     let meter: VoiceNoteLevelMeter | null = null;
@@ -370,7 +402,17 @@ export class VoiceNoteRecorder {
 
     const startedAt = this.dependencies.now();
     const interval = setInterval(() => this.sample(session), VOICE_NOTE_METERING_INTERVAL_MS);
-    this.active = { stream, recorder, meter, chunks, startedAt, interval, limitReported: false };
+    this.active = {
+      stream,
+      recorder,
+      meter,
+      chunks,
+      stopped,
+      resolveStopped,
+      startedAt,
+      interval,
+      limitReported: false,
+    };
     this.setState({ ...VOICE_NOTE_IDLE_STATE, phase: "recording" });
   }
 
@@ -380,18 +422,15 @@ export class VoiceNoteRecorder {
    */
   async finish(): Promise<File | null> {
     const active = this.active;
-    if (!active || this.state.phase !== "recording") return null;
+    if (!active || (this.state.phase !== "recording" && this.state.phase !== "interrupted")) {
+      return null;
+    }
     const session = this.session;
     this.setState({ ...this.state, phase: "sending" });
     clearInterval(active.interval);
 
-    await new Promise<void>((resolve) => {
-      active.recorder.onstop = () => resolve();
-      if (active.recorder.state === "inactive") resolve();
-      else active.recorder.stop();
-    });
-    active.meter?.close();
-    releaseStream(active.stream);
+    if (active.recorder.state !== "inactive") active.recorder.stop();
+    await active.stopped;
     if (this.active === active) this.active = null;
     if (session !== this.session) return null;
 
@@ -463,6 +502,7 @@ export class VoiceNoteRecorder {
     }
     active.meter?.close();
     releaseStream(active.stream);
+    active.resolveStopped();
   }
 
   private setState(next: VoiceNoteState): void {
