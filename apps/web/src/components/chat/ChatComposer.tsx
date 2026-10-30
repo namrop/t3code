@@ -5967,7 +5967,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     state: voiceNoteState,
   } = voiceNote;
   const voiceNoteRecording =
-    voiceNoteState.phase === "preparing" || voiceNoteState.phase === "recording";
+    voiceNoteState.phase === "preparing" ||
+    voiceNoteState.phase === "recording" ||
+    voiceNoteState.phase === "interrupted";
   useLayoutEffect(() => {
     voiceNoteRecordingRef.current = voiceNoteRecording;
     voiceNoteSendRef.current = voiceNoteSend;

@@ -223,6 +223,17 @@ describe("resolveVoiceNotePresentation", () => {
       sendLoading: false,
     });
   });
+
+  it("keeps send and cancel available after a recording is interrupted", () => {
+    expect(resolveVoiceNotePresentation(state({ phase: "interrupted" }))).toEqual({
+      showsBar: true,
+      showsCancel: true,
+      statusKind: "label",
+      statusLabel: "Recording interrupted. Send to keep the audio.",
+      sendEnabled: true,
+      sendLoading: false,
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -445,5 +456,110 @@ describe("VoiceNoteRecorder", () => {
     recorder.dispose();
     expect(recorders[0]!.stopCalls).toBe(1);
     expect(track.stopped).toBe(true);
+  });
+
+  it("scar 01a11825: browser interruption leaves captured speech recoverable", async () => {
+    const { recorder, recorders, track, meterClosed } = setup();
+    try {
+      await recorder.start();
+      recorders[0]!.emit("speech before screen sleep");
+
+      // A browser suspension/error is not the speaker cancelling the note.
+      // Retain the real recorder's received chunks across that interruption.
+      recorders[0]!.onerror?.(new Error("recording interrupted by browser"));
+      expect(recorder.currentState.phase).toBe("interrupted");
+      expect(track.stopped).toBe(true);
+      expect(meterClosed.value).toBe(true);
+      const partial = await recorder.finish();
+
+      expect(partial).not.toBeNull();
+      expect(await partial!.text()).toBe("speech before screen sleep-tail");
+      expect(recorders[0]!.stopCalls).toBe(1);
+      expect(recorder.currentState.phase).toBe("sending");
+    } finally {
+      recorder.dispose();
+    }
+  });
+
+  it("retains speech when the browser stops the recorder without an error", async () => {
+    const { recorder, recorders, track, meterClosed } = setup();
+    await recorder.start();
+    recorders[0]!.emit("before stream ended");
+    recorders[0]!.stop();
+
+    expect(recorder.currentState.phase).toBe("interrupted");
+    expect(track.stopped).toBe(true);
+    expect(meterClosed.value).toBe(true);
+    const interruptedState = recorder.currentState;
+    vi.advanceTimersByTime(1_000);
+    expect(recorder.currentState).toBe(interruptedState);
+    expect(await (await recorder.finish())!.text()).toBe("before stream ended-tail");
+    expect(recorders[0]!.stopCalls).toBe(1);
+    recorder.dispose();
+  });
+
+  it("waits for the browser's final data and stop events after an interruption", async () => {
+    const { recorder, recorders } = setup();
+    await recorder.start();
+    const mediaRecorder = recorders[0]!;
+    mediaRecorder.emit("head");
+    mediaRecorder.state = "inactive";
+    mediaRecorder.onerror?.(new Error("browser interrupted"));
+
+    let finished = false;
+    const finishing = recorder.finish().then((file) => {
+      finished = true;
+      return file;
+    });
+    await Promise.resolve();
+    expect(finished).toBe(false);
+    mediaRecorder.emit("-last speech");
+    mediaRecorder.onstop?.();
+
+    expect(await (await finishing)!.text()).toBe("head-last speech");
+    expect(mediaRecorder.stopCalls).toBe(0);
+    recorder.dispose();
+  });
+
+  it("retains the final speech when an error arrives while finishing", async () => {
+    const { recorder, recorders } = setup();
+    await recorder.start();
+    const mediaRecorder = recorders[0]!;
+    mediaRecorder.emit("head");
+    mediaRecorder.stop = () => {
+      mediaRecorder.state = "inactive";
+      mediaRecorder.onerror?.(new Error("browser interrupted while stopping"));
+      mediaRecorder.emit("-tail");
+      mediaRecorder.onstop?.();
+    };
+
+    const file = await recorder.finish();
+
+    expect(await file!.text()).toBe("head-tail");
+    expect(recorder.currentState.phase).toBe("sending");
+    recorder.dispose();
+  });
+
+  it("still discards an interrupted recording when the speaker cancels", async () => {
+    const { recorder, recorders } = setup();
+    await recorder.start();
+    recorders[0]!.emit("cancelled speech");
+    recorders[0]!.onerror?.(new Error("browser interrupted"));
+
+    recorder.cancel();
+
+    expect(recorder.currentState).toEqual(VOICE_NOTE_IDLE_STATE);
+    expect(await recorder.finish()).toBeNull();
+  });
+
+  it("reports no audio when an interrupted recording has no captured chunks", async () => {
+    const { recorder, recorders } = setup();
+    await recorder.start();
+    recorders[0]!.finalChunk = null;
+    recorders[0]!.onerror?.(new Error("browser interrupted"));
+
+    expect(await recorder.finish()).toBeNull();
+    expect(recorder.currentState.error).toBe("Nothing was recorded.");
+    recorder.dispose();
   });
 });

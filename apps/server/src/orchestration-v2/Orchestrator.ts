@@ -8128,8 +8128,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         message: command.reason ?? "Interrupt requested",
       };
 
+      const sessionOption =
+        providerTurn === undefined || providerThread.providerSessionId === null
+          ? Option.none()
+          : yield* providerSessions.get(providerThread.providerSessionId).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestratorProviderAdapterError({
+                    commandId: command.commandId,
+                    providerInstanceId: run.providerInstanceId,
+                    cause,
+                  }),
+              ),
+            );
+      // No provider can acknowledge Stop before start or after its session is gone.
       if (
-        providerTurn === undefined &&
+        (providerTurn === undefined || Option.isNone(sessionOption)) &&
         (run.status === "preparing" || run.status === "starting" || run.status === "running")
       ) {
         const attempt = projection.attempts.find(
@@ -8151,7 +8165,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           runId: run.id,
           nodeId: rootNode.id,
           providerThreadId: providerThread.id,
-          providerTurnId: null,
+          providerTurnId: providerTurn?.id ?? null,
           nativeItemRef: null,
           parentItemId: interruptRequestItem.id,
           ordinal: interruptRequestItem.ordinal + 1,
@@ -8161,7 +8175,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           completedAt: now,
           updatedAt: now,
           type: "run_interrupt_result",
-          message: "Run interrupted before provider start",
+          message:
+            providerTurn === undefined
+              ? "Run interrupted before provider start"
+              : "Run interrupted after provider session was lost",
         };
         yield* emitEvent({
           type: "turn-item.updated",
@@ -8211,6 +8228,37 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             },
           });
         }
+        if (providerTurn !== undefined) {
+          yield* emitEvent({
+            type: "provider-turn.updated",
+            threadId: command.threadId,
+            runId: run.id,
+            nodeId: rootNode.id,
+            providerInstanceId: run.providerInstanceId,
+            occurredAt: now,
+            payload: { ...providerTurn, status: "interrupted", completedAt: now },
+          });
+          yield* settleBackgroundWork({
+            command,
+            events,
+            projection,
+            stoppedProviderThreadId: providerThread.id,
+            throughRunOrdinal: run.ordinal,
+            now,
+          });
+          yield* emitEvent({
+            type: "provider-thread.updated",
+            threadId: command.threadId,
+            providerInstanceId: run.providerInstanceId,
+            occurredAt: now,
+            payload: {
+              ...providerThread,
+              status: "idle",
+              pendingBackgroundTasks: [],
+              updatedAt: now,
+            },
+          });
+        }
         yield* emitEvent({
           type: "run-attempt.updated",
           threadId: command.threadId,
@@ -8242,7 +8290,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         yield* stopCompletionCohort();
         return {
           effectTypes: ["provider-turn.start", "provider-turn.restart"],
-          reason: `Run ${run.id} was interrupted before its provider turn started.`,
+          reason: `Run ${run.id} was interrupted without a live provider turn.`,
         } satisfies {
           readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
           readonly reason: string;
@@ -8316,14 +8364,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       // Stop on a settled thread's background work. Its process may be gone
       // (released, restarted) and only the projection still shows the work;
       // the settle follow-up ends whatever no provider reports ending.
-      const settleOnly =
-        providerTurn.status !== "running" &&
-        (providerThread.providerSessionId === null ||
-          Option.isNone(
-            yield* providerSessions
-              .get(providerThread.providerSessionId)
-              .pipe(Effect.orElseSucceed(() => Option.none())),
-          ));
+      const settleOnly = Option.isNone(sessionOption);
       if (settleOnly) {
         yield* emitEvent({
           type: "turn-item.updated",
@@ -8347,31 +8388,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         yield* Ref.update(effects, (existing) => [...existing, ...otherProviderInterrupts]);
         return undefined;
       }
-      if (providerThread.providerSessionId === null) {
-        return yield* new OrchestratorDispatchError({
-          commandId: command.commandId,
-          commandType: command.type,
-          cause: `Provider thread ${providerThread.id} has no active provider session.`,
-        });
-      }
-      const providerSessionId = providerThread.providerSessionId;
-      const sessionOption = yield* providerSessions.get(providerSessionId).pipe(
-        Effect.mapError(
-          (cause) =>
-            new OrchestratorProviderAdapterError({
-              commandId: command.commandId,
-              providerInstanceId: run.providerInstanceId,
-              cause,
-            }),
-        ),
-      );
-      if (Option.isNone(sessionOption)) {
-        return yield* new OrchestratorDispatchError({
-          commandId: command.commandId,
-          commandType: command.type,
-          cause: `Provider session ${providerThread.providerSessionId} is not active.`,
-        });
-      }
+      const providerSessionId = sessionOption.value.providerSessionId;
       yield* enforceCommandPolicy(command)(
         commandPolicy.ensureInterrupt({
           commandId: command.commandId,
