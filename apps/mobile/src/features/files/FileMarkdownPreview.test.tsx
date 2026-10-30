@@ -14,6 +14,8 @@ const ui = vi.hoisted(() => ({
   tap: null as (() => void) | null,
   href: "",
   dispatch: vi.fn(),
+  renderImage: null as SelectableMarkdownTextProps["renderImage"] | null,
+  createUrl: vi.fn(),
 }));
 vi.mock("@react-navigation/native", async () => {
   const { createContext } = await import("react");
@@ -43,6 +45,7 @@ vi.mock("../../native/SelectableMarkdownText", () => ({
   hasNativeSelectableMarkdownText: () => ui.native,
   SelectableMarkdownText: (props: SelectableMarkdownTextProps) => {
     ui.tap = () => props.onLinkPress?.(ui.href);
+    ui.renderImage = props.renderImage ?? null;
     return null;
   },
 }));
@@ -54,6 +57,11 @@ vi.mock("../threads/ThreadMarkdownImage", () => ({
   ThreadMarkdownImage: () => null,
   ThreadMarkdownImageUnavailable: () => null,
 }));
+vi.mock("../../state/assets", () => ({ assetEnvironment: { createUrl: "createUrl" } }));
+vi.mock("../../state/session", () => ({
+  usePreparedConnection: () => ({ _tag: "Some", value: { httpBaseUrl: "https://sol.example/" } }),
+}));
+vi.mock("../../state/use-atom-query-runner", () => ({ useAtomQueryRunner: () => ui.createUrl }));
 
 let probe: ReturnType<typeof createReactProbe>;
 const uid = "01900000-0000-7000-8000-000000000001";
@@ -136,4 +144,65 @@ describe("FileMarkdownPreview Atrium navigation", () => {
       expect(ui.dispatch).not.toHaveBeenCalled();
     },
   );
+});
+
+describe("FileMarkdownPreview Atrium object files", () => {
+  async function renderObject(href: string) {
+    ui.native = true;
+    ui.href = href;
+    await probe.render(
+      <NavigationContext.Provider value={navigation}>
+        <FileMarkdownPreview
+          cwd=""
+          relativePath=""
+          captured
+          atriumObjectUid={uid}
+          markdown={`![Cropped receipt](assets/receipt_cropped.png)\n\n[PDF](${href})`}
+          environmentId={EnvironmentId.make("environment-1")}
+          threadId={ThreadId.make("thread-1")}
+        />
+      </NavigationContext.Provider>,
+    );
+  }
+
+  it("renders a note-relative image through Atrium Service instead of as unavailable", async () => {
+    await renderObject("assets/receipt.pdf");
+    const image = ui.renderImage?.({
+      href: "assets/receipt_cropped.png",
+      alt: "Cropped receipt",
+      title: null,
+    }) as {
+      props: { resource: unknown };
+    };
+    expect(image.props.resource).toEqual({
+      _tag: "atrium-file",
+      uid,
+      href: "assets/receipt_cropped.png",
+    });
+  });
+
+  it("opens a note-relative file link through a signed Atrium file URL", async () => {
+    ui.createUrl.mockResolvedValue({
+      _tag: "Success",
+      value: { relativeUrl: "/api/assets/token/receipt.pdf", expiresAt: 1 },
+    });
+    await renderObject("assets/receipt.pdf");
+    ui.tap?.();
+    await vi.waitFor(() => expect(Linking.openURL).toHaveBeenCalled());
+    expect(ui.createUrl).toHaveBeenCalledExactlyOnceWith({
+      environmentId: "environment-1",
+      input: { resource: { _tag: "atrium-file", uid, href: "assets/receipt.pdf" } },
+    });
+    expect(Linking.openURL).toHaveBeenCalledExactlyOnceWith(
+      "https://sol.example/api/assets/token/receipt.pdf",
+    );
+    expect(ui.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("keeps object links and web links on their existing paths", async () => {
+    await renderObject("https://example.com/receipt");
+    ui.tap?.();
+    expect(ui.createUrl).not.toHaveBeenCalled();
+    expect(Linking.openURL).toHaveBeenCalledExactlyOnceWith("https://example.com/receipt");
+  });
 });

@@ -13,7 +13,23 @@ import { create, type ReactTestInstance, type ReactTestRenderer } from "react-te
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const server = vi.hoisted(() => ({ readAtriumObject: vi.fn(), configValueAtom: vi.fn() }));
+// Every signed asset URL the body asks for, so a test can see which authority it used.
+const assets = vi.hoisted(() => ({ requested: [] as unknown[] }));
 vi.mock("~/state/server", () => ({ serverEnvironment: server }));
+vi.mock("~/assets/assetUrls", async (original) => ({
+  ...(await original<typeof import("~/assets/assetUrls")>()),
+  useAssetUrlState: (_environmentId: unknown, resource: { _tag: string; href?: string } | null) => {
+    if (resource === null) return { _tag: "Loading" };
+    // Renders repeat; record each resource once, in first-asked order.
+    if (!assets.requested.some((seen) => JSON.stringify(seen) === JSON.stringify(resource)))
+      assets.requested.push(resource);
+    return {
+      _tag: "Success",
+      url: `https://t3.example/api/assets/signed/${encodeURIComponent(resource.href ?? "")}`,
+    };
+  },
+  useAssetUrlRefresh: () => async () => null,
+}));
 vi.mock("~/hooks/useTheme", () => ({ useTheme: () => ({ resolvedTheme: "dark" }) }));
 vi.mock("~/hooks/useSettings", async (original) => {
   const actual = await original<typeof import("~/hooks/useSettings")>();
@@ -115,6 +131,7 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   registry = AtomRegistry.make();
   server.readAtriumObject.mockReset();
+  assets.requested.length = 0;
   server.configValueAtom.mockReturnValue(Atom.make(null));
   useRightPanelStore.setState({ byThreadKey: {}, userActionRevisionByThreadKey: {} });
   useRightPanelStore.getState().openAtrium(ref, reference, "Authored label");
@@ -334,7 +351,7 @@ describe("AtriumPanel current-object reads", () => {
     },
   );
 
-  it("opens a nested Atrium link in the same app scope without granting canonical paths file authority", async () => {
+  it("opens a nested Atrium link in the same app scope and keeps local paths out of the workspace", async () => {
     const body = `[Nested](atrium://uid/${UID}){why="Nested context"}\n\n[Local](/tmp/object.md)\n\n![Image](/tmp/image.png)\n\n- [ ] Read only`;
     server.readAtriumObject.mockReturnValue(Atom.make(Effect.succeed(object(body))));
     await render();
@@ -352,9 +369,59 @@ describe("AtriumPanel current-object reads", () => {
       reference: `atrium://uid/${UID}?why=Nested+context`,
       readRequestId: 2,
     });
-    expect(renderer!.root.findAllByType("img")).toHaveLength(0);
     expect(
       renderer!.root.findAllByType("a").some((link) => link.props.href === "/tmp/object.md"),
     ).toBe(false);
+    // Local destinations never reach the workspace or host files: they are the object's own
+    // files, which only Atrium Service resolves (and serves only when the object references them).
+    expect(assets.requested).toEqual([
+      { _tag: "atrium-file", uid: UID, href: "/tmp/object.md" },
+      { _tag: "atrium-file", uid: UID, href: "/tmp/image.png" },
+    ]);
+  });
+
+  it("loads a note's relative image and file links through Atrium Service, anchored to the object", async () => {
+    const body = [
+      "## Saved receipt",
+      "",
+      "![Cropped receipt](assets/bundle/receipt_cropped.png)",
+      "",
+      "- [Cropped receipt PDF](assets/bundle/receipt.pdf)",
+      "- [Full-bed scan](<assets/bundle/scan full bed.png>)",
+      "- [Manifest](../index.json)",
+      "- [Back to top](#saved-receipt)",
+      "- [Elsewhere](https://example.com/receipt)",
+    ].join("\n");
+    server.readAtriumObject.mockReturnValue(Atom.make(Effect.succeed(object(body))));
+    await render();
+    expect(assets.requested).toEqual(
+      expect.arrayContaining([
+        { _tag: "atrium-file", uid: UID, href: "assets/bundle/receipt_cropped.png" },
+        { _tag: "atrium-file", uid: UID, href: "assets/bundle/receipt.pdf" },
+        { _tag: "atrium-file", uid: UID, href: "assets/bundle/scan%20full%20bed.png" },
+        { _tag: "atrium-file", uid: UID, href: "../index.json" },
+      ]),
+    );
+    // Anchors and web links are not object files and keep their own behavior.
+    expect(
+      assets.requested.every((resource) => (resource as { _tag: string })._tag === "atrium-file"),
+    ).toBe(true);
+    expect(assets.requested).toHaveLength(4);
+    const links = renderer!.root.findAllByType("a");
+    const pdf = links.find((link) => text(link) === "Cropped receipt PDF")!;
+    expect(pdf.props.href).toBe(
+      `https://t3.example/api/assets/signed/${encodeURIComponent("assets/bundle/receipt.pdf")}`,
+    );
+    expect(pdf.props.target).toBe("_blank");
+    expect(links.find((link) => text(link) === "Back to top")!.props.href).toBe("#saved-receipt");
+    expect(links.find((link) => text(link) === "Elsewhere")!.props.href).toBe(
+      "https://example.com/receipt",
+    );
+    const image = renderer!.root
+      .findAllByType("img")
+      .find((img) => img.props.alt === "Cropped receipt");
+    expect(image?.props.src).toBe(
+      `https://t3.example/api/assets/signed/${encodeURIComponent("assets/bundle/receipt_cropped.png")}`,
+    );
   });
 });

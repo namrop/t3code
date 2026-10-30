@@ -1,7 +1,11 @@
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { normalizeAtriumMarkdown } from "@t3tools/client-runtime/atrium-links";
+import type { AtriumUid, EnvironmentId, ThreadId } from "@t3tools/contracts";
+import {
+  atriumObjectFileHref,
+  normalizeAtriumMarkdown,
+} from "@t3tools/client-runtime/atrium-links";
 import { resolveMarkdownLinkPresentation } from "@t3tools/mobile-markdown-text/links";
 import { resolveMediaSource } from "@t3tools/client-runtime/media-source";
+import { assetUrlStateFromResult } from "@t3tools/client-runtime/state/assets";
 import { getBrowseDirectoryPath } from "@t3tools/client-runtime/state/projects";
 import { useCallback, useMemo, useState } from "react";
 import {
@@ -10,10 +14,14 @@ import {
   type NodeStyleOverrides,
   type PartialMarkdownTheme,
 } from "react-native-nitro-markdown";
-import { RefreshControl, ScrollView, Text as NativeText, View } from "react-native";
+import { Alert, RefreshControl, ScrollView, Text as NativeText, View } from "react-native";
 
+import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { useMarkdownLinkOpener } from "../../lib/useMarkdownLinkOpener";
 import { useFontFamily } from "../../lib/useFontFamily";
+import { assetEnvironment } from "../../state/assets";
+import { usePreparedConnection } from "../../state/session";
+import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
 import {
   resolveMarkdownFontSizes,
   resolveNativeMarkdownTypography,
@@ -209,6 +217,9 @@ export function FileMarkdownPreview(props: {
   readonly relativePath: string;
   /** Absent for a file opened from a project draft, which has no thread yet. */
   readonly threadId: ThreadId | null;
+  /** The Atrium object this body belongs to. Its note-relative images and file links load
+      through Atrium Service, which resolves them against the object's own directory. */
+  readonly atriumObjectUid?: AtriumUid;
   readonly onRefresh?: () => Promise<void> | void;
 }) {
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
@@ -229,6 +240,18 @@ export function FileMarkdownPreview(props: {
   );
   const renderImage = useCallback<MarkdownImageRenderer>(
     (image) => {
+      const atriumHref =
+        props.atriumObjectUid === undefined ? null : atriumObjectFileHref(image.href);
+      if (atriumHref !== null && props.atriumObjectUid !== undefined) {
+        return (
+          <ThreadMarkdownImage
+            environmentId={props.environmentId}
+            resource={{ _tag: "atrium-file", uid: props.atriumObjectUid, href: atriumHref }}
+            alt={image.alt}
+            onPressPreview={() => undefined}
+          />
+        );
+      }
       const media = resolveMediaSource(image.href, {
         threadId: props.threadId ?? undefined,
         workspaceRoot: markdownDirectory,
@@ -255,12 +278,19 @@ export function FileMarkdownPreview(props: {
         />
       );
     },
-    [markdownDirectory, props.environmentId, props.threadId, props.captured],
+    [markdownDirectory, props.atriumObjectUid, props.environmentId, props.threadId, props.captured],
   );
-  const onLinkPress = useMarkdownLinkOpener({
+  const openMarkdownLink = useMarkdownLinkOpener({
     environmentId: props.environmentId,
     threadId: props.threadId,
   });
+  const openAtriumFile = useAtriumObjectFileOpener(props.environmentId, props.atriumObjectUid);
+  const onLinkPress = useCallback(
+    (href: string) => {
+      if (!openAtriumFile(href)) openMarkdownLink(href);
+    },
+    [openAtriumFile, openMarkdownLink],
+  );
   const styles = useMarkdownPreviewStyles(onLinkPress, renderImage);
   const normalizedMarkdown = useMemo(
     () => normalizeAtriumMarkdown(props.markdown),
@@ -300,5 +330,48 @@ export function FileMarkdownPreview(props: {
         )}
       </View>
     </ScrollView>
+  );
+}
+
+/**
+ * Opens a file an Atrium object links, such as a receipt's PDF, in the system viewer through a
+ * freshly signed asset URL. Returns false for links that are not the object's own files.
+ */
+function useAtriumObjectFileOpener(
+  environmentId: EnvironmentId,
+  atriumObjectUid: AtriumUid | undefined,
+) {
+  const connection = usePreparedConnection(environmentId);
+  const httpBaseUrl = connection._tag === "Some" ? connection.value.httpBaseUrl : null;
+  const createUrl = useAtomQueryRunner(assetEnvironment.createUrl, {
+    refresh: true,
+    reportFailure: false,
+  });
+  return useCallback(
+    (href: string) => {
+      const atriumHref = atriumObjectUid === undefined ? null : atriumObjectFileHref(href);
+      if (atriumHref === null || atriumObjectUid === undefined) return false;
+      void (async () => {
+        const state =
+          httpBaseUrl === null
+            ? null
+            : assetUrlStateFromResult(
+                await createUrl({
+                  environmentId,
+                  input: {
+                    resource: { _tag: "atrium-file", uid: atriumObjectUid, href: atriumHref },
+                  },
+                }),
+                httpBaseUrl,
+              );
+        if (state?._tag === "Success") {
+          await tryOpenExternalUrl(state.url, "file-preview");
+        } else {
+          Alert.alert("File unavailable", "This file could not be opened from Atrium.");
+        }
+      })();
+      return true;
+    },
+    [atriumObjectUid, createUrl, environmentId, httpBaseUrl],
   );
 }

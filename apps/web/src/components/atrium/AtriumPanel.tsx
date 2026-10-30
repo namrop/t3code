@@ -150,6 +150,7 @@ export function AtriumPanel(props: {
               cwd={undefined}
               threadRef={threadRef}
               workspaceLinks={false}
+              atriumObjectUid={object.uid}
               headingLevelOffset={1}
             />
           </article>

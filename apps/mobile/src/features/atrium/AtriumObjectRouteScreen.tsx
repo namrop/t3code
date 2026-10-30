@@ -107,6 +107,7 @@ export function AtriumObjectRouteScreen({ route }: StaticScreenProps<AtriumObjec
           cwd=""
           relativePath=""
           captured
+          atriumObjectUid={object.uid}
           environmentId={environmentId}
           threadId={threadId}
           markdown={object.body}

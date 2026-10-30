@@ -28,6 +28,7 @@ import {
 import { Check, Copy, Maximize2, Minimize2 } from "lucide";
 import type {
   AssetResource,
+  AtriumUid,
   EnvironmentId,
   ScopedThreadRef,
   ServerProviderSkill,
@@ -84,7 +85,11 @@ import ReactMarkdown from "react-markdown";
 import { toHtml } from "hast-util-to-html";
 import { createIncrementalMarkdownPlugin } from "../markdown-incremental";
 import { defaultUrlTransform } from "react-markdown";
-import { remarkAtriumLinks, parseAtriumLink } from "@t3tools/client-runtime/atrium-links";
+import {
+  atriumObjectFileHref,
+  remarkAtriumLinks,
+  parseAtriumLink,
+} from "@t3tools/client-runtime/atrium-links";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkBreaks from "remark-breaks";
@@ -230,6 +235,9 @@ interface ChatMarkdownProps {
   imageBaseDir?: string | undefined;
   /** Atrium bodies are not workspace files: local paths must stay inert. */
   workspaceLinks?: boolean | undefined;
+  /** The Atrium object this body belongs to. Its note-relative images and file links load
+      through Atrium Service, which resolves them against the object's own directory. */
+  atriumObjectUid?: AtriumUid | undefined;
   onImageExpand?: ((preview: ExpandedImagePreview) => void) | undefined;
   extraRemarkPlugins?: NonNullable<ReactMarkdownOptions["remarkPlugins"]>;
   /** Renders a `t3-context://` link as a chip; without it the link shows its label as text. */
@@ -1777,7 +1785,14 @@ export const ChatMarkdownAssetImage = memo(function ChatMarkdownAssetImage(props
   readonly environmentId: EnvironmentId;
   readonly resource: Extract<
     AssetResource,
-    { readonly _tag: "attachment" | "workspace-file" | "media-file" | "github-media" }
+    {
+      readonly _tag:
+        | "attachment"
+        | "workspace-file"
+        | "media-file"
+        | "github-media"
+        | "atrium-file";
+    }
   >;
   readonly kind?: "image" | "video";
   readonly alt: string;
@@ -1894,6 +1909,35 @@ export const ChatMarkdownAssetImage = memo(function ChatMarkdownAssetImage(props
     />
   );
 });
+
+/**
+ * A file an Atrium object links, such as a receipt's PDF, opened in a new tab through a
+ * signed asset URL. The URL is signed when the link renders, so the click itself opens
+ * synchronously and is not treated as a popup.
+ */
+function AtriumObjectFileLink(props: {
+  readonly environmentId: EnvironmentId;
+  readonly resource: Extract<AssetResource, { readonly _tag: "atrium-file" }>;
+  readonly copyMarkdown: string | undefined;
+  readonly children?: ReactNode;
+}) {
+  const assetUrl = useAssetUrlState(props.environmentId, props.resource);
+  // A file the object no longer has (or never referenced) reads as plain text, as it did before.
+  if (assetUrl._tag === "Failure") {
+    return <span data-markdown-copy={props.copyMarkdown}>{props.children}</span>;
+  }
+  return (
+    <a
+      data-markdown-copy={props.copyMarkdown}
+      href={assetUrl._tag === "Success" ? assetUrl.url : undefined}
+      aria-busy={assetUrl._tag === "Loading" ? true : undefined}
+      target="_blank"
+      rel="noopener noreferrer"
+    >
+      {props.children}
+    </a>
+  );
+}
 
 function leadingExternalLinkTextLength(text: string): number {
   const protocol = /^(?:https?:\/\/)/i.exec(text)?.[0];
@@ -2451,6 +2495,7 @@ function useChatMarkdownState({
   headingLevelOffset = 0,
   githubMedia = false,
   workspaceLinks = true,
+  atriumObjectUid,
 }: ChatMarkdownProps) {
   const { resolvedTheme } = useTheme();
   const [localMediaPreview, setLocalMediaPreview] = useState<ExpandedImagePreview | null>(null);
@@ -2842,6 +2887,7 @@ function useChatMarkdownState({
     () => ({
       cwd,
       workspaceLinks,
+      atriumObjectUid,
       diffThemeName,
       environmentId,
       expandMedia,
@@ -2875,6 +2921,7 @@ function useChatMarkdownState({
       cwd,
       diffThemeName,
       workspaceLinks,
+      atriumObjectUid,
       environmentId,
       expandMedia,
       fileLinkChip,
@@ -3046,6 +3093,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
       renderContextReference,
       text,
       workspaceLinks,
+      atriumObjectUid,
     } = use(ChatMarkdownRendererContext);
     const citation = href ? parseAssistantCitationHref(href) : null;
     if (citation) return <AssistantCitationChip citation={citation} />;
@@ -3090,6 +3138,19 @@ const CHAT_MARKDOWN_COMPONENTS = {
           !normalizedHref.startsWith("//") &&
           !/^[a-z][a-z0-9+.-]*:/i.test(normalizedHref)))
     ) {
+      // An Atrium object's own files open through Atrium Service instead.
+      const atriumHref = atriumObjectUid === undefined ? null : atriumObjectFileHref(href);
+      if (atriumHref !== null && atriumObjectUid !== undefined && environmentId !== null) {
+        return (
+          <AtriumObjectFileLink
+            environmentId={environmentId}
+            resource={{ _tag: "atrium-file", uid: atriumObjectUid, href: atriumHref }}
+            copyMarkdown={authoredLink || undefined}
+          >
+            {children}
+          </AtriumObjectFileLink>
+        );
+      }
       return <span data-markdown-copy={authoredLink || undefined}>{children}</span>;
     }
     const fileLinkMeta =
@@ -3382,6 +3443,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
       threadRef,
       renderContextReference,
       workspaceLinks,
+      atriumObjectUid,
     } = use(ChatMarkdownRendererContext);
     const imageExpand = use(MarkdownLinkContext) ? undefined : expandMedia;
     const contextReference = typeof src === "string" ? parseComposerContextHref(src) : null;
@@ -3437,6 +3499,26 @@ const CHAT_MARKDOWN_COMPONENTS = {
           // the public half of these working exactly as it did before. The canonical URL, not the
           // authored one: a `blob` link addresses the page, and only the raw host has the bytes.
           fallbackSrc={githubMediaUrl}
+          onImageExpand={imageExpand}
+        />
+      );
+    }
+    const atriumHref =
+      atriumObjectUid === undefined || typeof authoredSrc !== "string"
+        ? null
+        : atriumObjectFileHref(authoredSrc);
+    if (atriumHref !== null && atriumObjectUid !== undefined && environmentId !== null) {
+      return (
+        <ChatMarkdownAssetImage
+          environmentId={environmentId}
+          resource={{ _tag: "atrium-file", uid: atriumObjectUid, href: atriumHref }}
+          alt={altText}
+          kind={kind}
+          copyMarkdown={copyMarkdown}
+          standalone={standalone}
+          className={className}
+          style={authoredSizeStyle}
+          imageProps={imageProps}
           onImageExpand={imageExpand}
         />
       );

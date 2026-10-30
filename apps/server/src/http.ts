@@ -31,6 +31,7 @@ import * as ReplySpeech from "./replySpeech.ts";
 import * as ServerConfig from "./config.ts";
 import { ASSET_ROUTE_PREFIX, resolveAsset } from "./assets/AssetAccess.ts";
 import { githubMediaResponse } from "./assets/GitHubMediaFetch.ts";
+import { atriumObjectFileResponse } from "./atrium/AtriumObjectFile.ts";
 import { statMediaFile, streamMediaFile, type OpenMediaFile } from "./assets/MediaFile.ts";
 import {
   ATTACHMENT_UPLOAD_ROUTE_PREFIX,
@@ -457,6 +458,9 @@ export const assetRouteLayer = HttpRouter.add(
           }),
         ),
       );
+    }
+    if (asset.kind === "atrium-file") {
+      return yield* atriumObjectFileResponse(asset);
     }
     return yield* assetFileResponse(
       asset,

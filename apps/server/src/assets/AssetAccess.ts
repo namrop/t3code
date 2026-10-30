@@ -146,6 +146,14 @@ const AssetClaimsSchema = Schema.Union([
     cwd: Schema.String,
     expiresAt: Schema.Number,
   }),
+  Schema.Struct({
+    version: Schema.Literal(1),
+    kind: Schema.Literal("atrium-file"),
+    /** The object and the destination as it authors it; Atrium Service resolves the pair. */
+    uid: Schema.String,
+    href: Schema.String,
+    expiresAt: Schema.Number,
+  }),
 ]);
 type AssetClaims = typeof AssetClaimsSchema.Type;
 
@@ -169,6 +177,11 @@ export type ResolvedAsset =
       /** When the signed URL that granted this stops working, which bounds how long a client
           may keep the bytes it fetched with it. */
       readonly expiresAt: number;
+    }
+  | {
+      readonly kind: "atrium-file";
+      readonly uid: string;
+      readonly href: string;
     };
 
 function decodeClaims(encodedPayload: string): AssetClaims | null {
@@ -185,6 +198,13 @@ function decodeRelativePath(value: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** The name an authored Atrium destination ends in: the readable tail of its signed URL. */
+function atriumFileName(href: string): string {
+  const path = href.replace(/^\s*<|>\s*$/g, "").split(/[?#]/, 1)[0] ?? "";
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  return (decodeRelativePath(name) ?? name) || "atrium-file";
 }
 
 const optionOnNotFound = <A, R>(
@@ -699,6 +719,17 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
       fileName = githubMediaFileName(fetchUrl);
       break;
     }
+    case "atrium-file": {
+      claims = {
+        version: 1,
+        kind: "atrium-file",
+        uid: input.resource.uid,
+        href: input.resource.href,
+        expiresAt,
+      };
+      fileName = atriumFileName(input.resource.href);
+      break;
+    }
   }
 
   const secretStore = yield* ServerSecretStore.ServerSecretStore;
@@ -806,6 +837,10 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
       cwd: claims.cwd,
       expiresAt: claims.expiresAt,
     } satisfies ResolvedAsset;
+  }
+
+  if (claims.kind === "atrium-file") {
+    return { kind: "atrium-file", uid: claims.uid, href: claims.href } satisfies ResolvedAsset;
   }
 
   if (claims.kind === "native-app-icon") {

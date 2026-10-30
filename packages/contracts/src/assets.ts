@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 
 import { NonNegativeInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { AtriumUid } from "./atrium.ts";
 import {
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
@@ -56,6 +57,13 @@ export const AssetResource = Schema.Union([
   Schema.TaggedStruct("github-media", {
     cwd: TrimmedNonEmptyString.check(Schema.isMaxLength(ASSET_PATH_MAX_LENGTH)),
     url: TrimmedNonEmptyString.check(Schema.isMaxLength(2048)),
+  }),
+  // A file an Atrium object references, such as the scan a receipt note embeds. `href` is the
+  // destination exactly as the object authors it; Atrium Service resolves it against the
+  // object's own directory and serves only files the object references.
+  Schema.TaggedStruct("atrium-file", {
+    uid: AtriumUid,
+    href: TrimmedNonEmptyString.check(Schema.isMaxLength(2048)),
   }),
 ]);
 export type AssetResource = typeof AssetResource.Type;

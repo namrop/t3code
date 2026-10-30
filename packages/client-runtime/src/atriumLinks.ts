@@ -180,6 +180,20 @@ export function parseAtriumLink(reference: string): AtriumLink | null {
   };
 }
 
+/**
+ * A destination an Atrium object authors for one of its own files: note-relative
+ * (`assets/scan.png`, `../index.json`) or repository-root relative (`/shared/policy.pdf`).
+ * It is passed on exactly as authored; Atrium Service resolves it against the object's
+ * directory, which a renderer cannot know from the page it is drawn in. In-page anchors,
+ * URLs with a scheme, and protocol-relative `//host` destinations are not object files.
+ */
+export function atriumObjectFileHref(href: string | null | undefined): string | null {
+  const value = href?.trim() ?? "";
+  if (!value || value.startsWith("#") || value.startsWith("//")) return null;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value)) return null;
+  return /^<?[^?#]/.test(value) ? value : null;
+}
+
 interface MarkdownNode {
   type?: string | undefined;
   url?: string | undefined;

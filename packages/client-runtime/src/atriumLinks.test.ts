@@ -1,9 +1,41 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { normalizeAtriumMarkdown, parseAtriumLink } from "./atriumLinks.ts";
+import { atriumObjectFileHref, normalizeAtriumMarkdown, parseAtriumLink } from "./atriumLinks.ts";
 
 const UID = "01900000-0000-7000-8000-000000000001";
 const REF = `atrium://uid/${UID}`;
+
+describe("atriumObjectFileHref", () => {
+  it.each([
+    "assets/receipt/receipt_cropped.png",
+    "./assets/receipt/receipt.pdf",
+    "../index.json",
+    "/shared/policy.pdf",
+    "assets/scan%20full%20bed.png",
+    "<assets/scan full bed.png>",
+    "assets/manifest.json#top",
+    "other-note.md",
+  ])("passes the object's own file %s on exactly as authored", (href) => {
+    expect(atriumObjectFileHref(href)).toBe(href);
+  });
+
+  it.each([
+    "",
+    "   ",
+    "#saved-receipt",
+    "?query=only",
+    "//example.com/receipt.png",
+    "https://example.com/receipt.pdf",
+    "mailto:someone@example.com",
+    `atrium://uid/${UID}`,
+    `uid:${UID}`,
+    "data:image/png;base64,AAAA",
+    null,
+    undefined,
+  ])("leaves %s to its existing handling", (href) => {
+    expect(atriumObjectFileHref(href)).toBeNull();
+  });
+});
 
 describe("Atrium object navigation", () => {
   it("projects canonical identity to the existing reader's UID deep link", () => {
