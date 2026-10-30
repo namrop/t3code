@@ -10,6 +10,9 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientResponse } from "effect/http";
 
+/** The estate's Atrium Service, behind the Atrium reader's private origin. */
+export const ATRIUM_SERVICE_ORIGIN = "https://atrium.sol.pharos.zone";
+
 const AtriumObjectResponse = Schema.Struct({
   ok: Schema.Literal(true),
   object: Schema.Struct({
@@ -40,7 +43,7 @@ const make = Effect.gen(function* () {
   )(
     function* ({ uid }) {
       const response = yield* httpClient
-        .get("https://atrium.sol.pharos.zone/api/object", { urlParams: { ref: uid } })
+        .get(`${ATRIUM_SERVICE_ORIGIN}/api/object`, { urlParams: { ref: uid } })
         .pipe(
           Effect.mapError(
             (cause) => new AtriumReadObjectError({ uid, reason: "unavailable", cause }),

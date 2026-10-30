@@ -1300,4 +1300,32 @@ describe("AssetAccess", () => {
       }
     }).pipe(Effect.provide(testLayer)),
   );
+
+  it.effect("signs an Atrium object's file as the object and its authored destination", () =>
+    Effect.gen(function* () {
+      const uid = "01900000-0000-7000-8000-000000000001";
+      const resolve = (relativeUrl: string) => {
+        const suffix = relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+        const separator = suffix.indexOf("/");
+        return resolveAsset(suffix.slice(0, separator), suffix.slice(separator + 1));
+      };
+      const issued = yield* issueAssetUrl({
+        resource: { _tag: "atrium-file", uid, href: "assets/bundle/scan%20full%20bed.png#page=1" },
+      });
+      // The readable tail is the file's own name; the token carries the authored pair.
+      expect(issued.relativeUrl.endsWith("/scan%20full%20bed.png")).toBe(true);
+      expect(yield* resolve(issued.relativeUrl)).toEqual({
+        kind: "atrium-file",
+        uid,
+        href: "assets/bundle/scan%20full%20bed.png#page=1",
+      });
+      // A token cannot be re-pointed at another destination.
+      const [token] = issued.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length).split("/");
+      const [payload, signature] = token!.split(".");
+      const forged = Buffer.from(
+        Buffer.from(payload!, "base64url").toString("utf8").replace("assets/bundle", "../../.."),
+      ).toString("base64url");
+      expect(yield* resolveAsset(`${forged}.${signature}`, "x.png")).toBeNull();
+    }).pipe(Effect.provide(testLayer)),
+  );
 });
